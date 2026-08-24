@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "id": "7bee836f-a2c6-4f0e-b12c-c85b9ca3d788",
+  "version": 15,
+  "graphHash": "2c476b1e283e7a8c320c122925fea006f84d3178cb09780de4700145d28aed21",
+  "nodes": [
+    {
+      "id": "4222d780-404a-43c4-a6d9-a67388e53d88",
+      "type": "text-to-image",
+      "params": {
+        "prompt": "A beautiful landscape"
+      },
+      "inputs": [
+        {
+          "id": "text",
+          "type": "text"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "image",
+          "type": "image"
+        }
+      ],
+      "status": "idle"
+    },
+    {
+      "id": "e1ec8dea-02d0-4514-b852-8b5ebe2bda5d",
+      "type": "output",
+      "params": {},
+      "inputs": [
+        {
+          "id": "image",
+          "type": "image"
+        },
+        {
+          "id": "video",
+          "type": "video"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "image",
+          "type": "image"
+        },
+        {
+          "id": "video",
+          "type": "video"
+        }
+      ],
+      "status": "idle"
+    }
+  ],
+  "edges": [
+    {
+      "id": "8ca6c76c-4aed-41fa-90a3-5d122bd33c69",
+      "source": "4222d780-404a-43c4-a6d9-a67388e53d88",
+      "sourcePort": "image",
+      "target": "e1ec8dea-02d0-4514-b852-8b5ebe2bda5d",
+      "targetPort": "image"
+    }
+  ]
+}

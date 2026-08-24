@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "0af52c45-c837-41d9-9e67-3b293cefcd68",
+  "version": 22,
+  "graphHash": "ffe51a31909fedc186f26aa0afd9f5e358be6cb66046204beafff6bb7fddd279",
+  "nodes": [
+    {
+      "id": "1469e88c-eb3a-4315-9d2e-039dd23f543b",
+      "type": "text-to-image",
+      "params": {
+        "prompt": "搜索下近期热门的会哭的马，并设计成巨型艺术毛绒装置，趴在外滩街道，云雾环绕陆家嘴高楼，保留超现实艺术的风格，前后景设汽车和建筑，以虚实景深营视觉张力效果",
+        "width": 1920,
+        "height": 1920,
+        "model": "doubao-seedream-5-0-pro-260628"
+      },
+      "inputs": [
+        {
+          "id": "text",
+          "type": "text"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "image",
+          "type": "image"
+        }
+      ],
+      "status": "succeeded",
+      "cachedResult": {
+        "id": "1b8692f39127970daaec7a8a2cc074a7f3f5bafc54f9663f7c11fba84ff1b002",
+        "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-ed062273-97b1-4d3d-9400-c5220ae5c846.png",
+        "type": "image",
+        "sizeBytes": 5321033
+      }
+    },
+    {
+      "id": "b0f88c4d-6af5-4381-9f5e-5f74c16e9dbe",
+      "type": "output",
+      "params": {},
+      "inputs": [
+        {
+          "id": "image",
+          "type": "image"
+        },
+        {
+          "id": "video",
+          "type": "video"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "image",
+          "type": "image"
+        },
+        {
+          "id": "video",
+          "type": "video"
+        }
+      ],
+      "status": "succeeded",
+      "cachedResult": {
+        "id": "1b8692f39127970daaec7a8a2cc074a7f3f5bafc54f9663f7c11fba84ff1b002",
+        "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-ed062273-97b1-4d3d-9400-c5220ae5c846.png",
+        "type": "image",
+        "sizeBytes": 5321033
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "d9ae477a-a5e0-48d6-8968-b921f892ae68",
+      "source": "1469e88c-eb3a-4315-9d2e-039dd23f543b",
+      "sourcePort": "image",
+      "target": "b0f88c4d-6af5-4381-9f5e-5f74c16e9dbe",
+      "targetPort": "image"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "ffe83261-f906-416b-9c75-5c2a2c5c27fe",
+  "tracks": [
+    {
+      "id": "51056139-e8cc-4e16-9d46-aea46d6e6c43",
+      "type": "video",
+      "name": "Video 1",
+      "clips": []
+    },
+    {
+      "id": "7d9fd0f9-cc2f-4b77-8f41-9bd8a260a7a2",
+      "type": "video",
+      "name": "Video 1",
+      "clips": []
+    }
+  ]
+}

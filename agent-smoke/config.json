@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "provider": {
+    "default": "volcengine",
+    "volcengine": {
+      "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+      "imageModel": "doubao-seedream-5-0-pro-260628",
+      "videoModel": "doubao-seedance-2-5-260628",
+      "timeoutMs": 300000
+    }
+  },
+  "tos": {
+    "endpoint": "https://tos-cn-beijing.volces.com",
+    "region": "cn-beijing",
+    "bucket": "",
+    "urlTtlSeconds": 7200
+  },
+  "concurrency": {
+    "maxGenerationJobs": 3
+  },
+  "ffmpeg": {
+    "path": ""
+  }
+}

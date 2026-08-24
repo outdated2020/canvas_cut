@@ -1,0 +1,52 @@
+{
+  "482be3140490be0cd2cc45d96052c22c981d3ebbfbf98b309f8c59c926af3121": {
+    "cacheKey": "482be3140490be0cd2cc45d96052c22c981d3ebbfbf98b309f8c59c926af3121",
+    "asset": {
+      "id": "ae0b86cf5aad80e1c2da13dd524c814628d61aa30f31311386e6b94cef17989a",
+      "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-e2475798-7a65-4076-9215-c686915f097d.png",
+      "type": "image",
+      "sizeBytes": 5185959
+    },
+    "createdAt": 1787495669493
+  },
+  "d1c41e309a0c798c80939879ca3455f1766391d9cc6f149fd8802f2cb2cf1899": {
+    "cacheKey": "d1c41e309a0c798c80939879ca3455f1766391d9cc6f149fd8802f2cb2cf1899",
+    "asset": {
+      "id": "1b8692f39127970daaec7a8a2cc074a7f3f5bafc54f9663f7c11fba84ff1b002",
+      "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-ed062273-97b1-4d3d-9400-c5220ae5c846.png",
+      "type": "image",
+      "sizeBytes": 5321033
+    },
+    "createdAt": 1787508779498
+  },
+  "761174f5d59fc620ebec2c01de00fa2818d93ff1f9bed2addca58747fa1adf57": {
+    "cacheKey": "761174f5d59fc620ebec2c01de00fa2818d93ff1f9bed2addca58747fa1adf57",
+    "asset": {
+      "id": "365dff153a33ea3578c5aedb49a50967df571cdea5495a3fd46e88fbc1f1a119",
+      "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-1ac950e7-3c29-427e-877e-53bc54d3164c.png",
+      "type": "image",
+      "sizeBytes": 7589258
+    },
+    "createdAt": 1787590200717
+  },
+  "07a321499a811b4b88db0ecae9233b3a578879fa1b57063caf00faa6b32bf348": {
+    "cacheKey": "07a321499a811b4b88db0ecae9233b3a578879fa1b57063caf00faa6b32bf348",
+    "asset": {
+      "id": "4ddfd2cc8fe861891e4974207e9d2b40feca8cf801d9de86488d17e80f77f9d7",
+      "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-0eb687cb-f49c-4191-b770-90bfbe672ddf.png",
+      "type": "image",
+      "sizeBytes": 7083688
+    },
+    "createdAt": 1787590413658
+  },
+  "7803e8337361911ee83c60af1b5990968f518fc543fd8b86b34ed6c9bebc4f5c": {
+    "cacheKey": "7803e8337361911ee83c60af1b5990968f518fc543fd8b86b34ed6c9bebc4f5c",
+    "asset": {
+      "id": "a8affa5cd1c3261352dc29961cbcc79ea6bb489c92e41bc9a376f5647d453f09",
+      "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-025b8548-2e38-4e43-8512-89239b7b7ea6.png",
+      "type": "image",
+      "sizeBytes": 7190306
+    },
+    "createdAt": 1787593604615
+  }
+}

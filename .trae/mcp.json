@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "canvas-cut-ui": {
+      "command": "C:\\Program Files\\nodejs\\node.exe",
+      "args": [
+        "C:\\Users\\liqijun\\Desktop\\canvas_cut\\apps\\cli\\dist\\index.js",
+        "mcp"
+      ]
+    }
+  }
+}
