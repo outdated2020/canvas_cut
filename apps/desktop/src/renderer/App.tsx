@@ -78,6 +78,8 @@ export function App() {
   const [chatInput, setChatInput] = useState('');
   const [chatMessages, setChatMessages] = useState<AnyRecord[]>([]);
   const [canvas, setCanvas] = useState<AnyRecord | null>(null);
+  const [centerColWidth, setCenterColWidth] = useState(42); // percentage of workspace width
+  const [isDraggingResizer, setIsDraggingResizer] = useState(false);
   const [runtimeSettings, setRuntimeSettings] = useState({
     arkApiKey: '',
     tosAccessKeyId: '',
@@ -93,6 +95,36 @@ export function App() {
 
   async function invoke(channel: string, payload: Record<string, unknown> = {}) {
     return window.api.invoke(channel, payload);
+  }
+
+  function handleResizerMouseDown(e: React.MouseEvent) {
+    e.preventDefault();
+    setIsDraggingResizer(true);
+
+    const workspace = (e.currentTarget as HTMLElement).parentElement;
+    if (!workspace) return;
+    const startX = e.clientX;
+    const workspaceRect = workspace.getBoundingClientRect();
+    const startPct = (centerColWidth / 100) * workspaceRect.width;
+
+    function onMouseMove(ev: MouseEvent) {
+      const dx = ev.clientX - startX;
+      const newWidth = startPct + dx;
+      const minWidth = 280;
+      const maxWidth = workspaceRect.width - 280;
+      const clamped = Math.max(minWidth, Math.min(maxWidth, newWidth));
+      const pct = (clamped / workspaceRect.width) * 100;
+      setCenterColWidth(pct);
+    }
+
+    function onMouseUp() {
+      setIsDraggingResizer(false);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    }
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
   }
 
   async function initProject(): Promise<AnyRecord | null> {
@@ -611,7 +643,10 @@ export function App() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div
+        className={`workspace ${isDraggingResizer ? 'resizing' : ''}`}
+        style={{ ['--center-col' as string]: `${centerColWidth}%` }}
+      >
         <aside className="ai-panel">
           <div className="ai-head">
             <Icon name="home" size={15} />
@@ -827,6 +862,12 @@ export function App() {
             </>
           )}
         </section>
+
+        <div
+          className={`panel-resizer ${isDraggingResizer ? 'dragging' : ''}`}
+          onMouseDown={handleResizerMouseDown}
+          title="Drag to resize"
+        />
 
         <section className="viewer-panel">
           <div className="viewer-label">Viewer</div>

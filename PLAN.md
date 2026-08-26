@@ -1,7 +1,7 @@
 # 开工执行计划（KICKOFF PLAN）
 
-> 状态：Phase 0 主要代码已实现，Agent/MCP 已落地；真实生成/导出待接入密钥后联调
-> 更新日期：2026-08-21
+> 状态：Phase 0 主要代码已实现；Agent 对话已真实联调通过（OpenAI 兼容 Chat Completions），真实生成/导出待密钥 + FFmpeg 联调
+> 更新日期：2026-08-27
 
 ## 1. 目标
 
@@ -22,7 +22,7 @@
 | 预览 | WebGL 实时合成 + 本地低清代理；画布按导出分辨率一次生成 |
 | 导出 | FFmpeg sidecar |
 | 素材上传 | TOS（`@volcengine/tos-sdk`，AK/SK 存 Keychain，putObject + 预签名 + deleteObject） |
-| Agent | Mastra + Vercel AI SDK + SKILL.md + CLI manifest 工具 |
+| Agent | Vercel AI SDK（generateText + tool，OpenAI 兼容 Chat Completions）+ SKILL.md + CLI manifest 工具；Mastra 仅声明未接线 |
 | 代码结构 | monorepo：apps/desktop、apps/cli、packages/core、packages/agent、skills |
 
 ## 3. 文档索引
@@ -67,7 +67,7 @@
 7. **M6 UI 最小闭环**：项目页 + 画布 + 时间线 + 预览
 8. **M7 导出**：FFmpeg 单轨成片 + 端到端跑通
 
-## 5.1 当前实现进度（2026-08-21）
+## 5.1 当前实现进度（2026-08-27）
 
 | 里程碑 | 状态 | 说明 |
 | --- | --- | --- |
@@ -79,7 +79,7 @@
 | M5 本地 IPC + 主进程 | 已完成 | 单实例、named pipe IPC、DaemonService（多项目上下文/去重/reconcile）、Job Worker（并发限制 3 + 轮询） |
 | M6 UI 最小闭环 | 已完成 | v2 布局：标题栏 / 左 AI 面板 / 中心资产-画布 / 查看器 / 时间线；Agent 对话 + 运行时设置已接入 |
 | M7 导出 | 代码完成 | FFmpeg 命令构建与执行、canvas clip 解析、资产校验；本机缺 ffmpeg，未跑真实导出 |
-| Agent 编排 | 已落地（基础） | Vercel AI SDK 多轮对话 + create/render/add-to-timeline 工具、SKILL.md 解析、30+ CLI 工具；SKILL 驱动编排待打磨 |
+| Agent 编排 | 已落地（基础，对话已联调通过） | Vercel AI SDK 多轮对话 + create/render/add-to-timeline 3 工具、SKILL.md 解析、30+ CLI 工具；已用真实模型验证对话（`openai.chat()` 走 Chat Completions，避开 Responses 兼容问题）；SKILL 驱动动态编排待打磨 |
 | MCP / UI 可观测 | 已完成 | CLI `mcp` stdio server + `ui_screenshot`、主窗口截图（启动自动 + 按需），供外部 Agent 观察 UI |
 
 ### 已完成能力
@@ -88,7 +88,8 @@
 - 可交互画布：拖拽、添加/删除节点、端口连线、双击编辑参数、节点状态颜色
 - 可视化时间线：轨道、片段块、拖拽移动片段、播放头/缩放/吸附等工具条
 - UI v2 布局：左 AI 面板（模板/对话）、中心资产/画布切换、右侧 Viewer、底部时间线
-- Agent 闭环：自然语言 -> 创建画布 -> 渲染 -> 加入时间线（`agent.chat` IPC + UI 对话框）
+- Agent 闭环：自然语言 -> 创建画布 -> 渲染 -> 加入时间线（`agent.chat` IPC + UI 对话框）；已用真实 Ark 模型验证对话返回正常
+- Agent 运行时：ESM 依赖（`ai`/`@ai-sdk/openai`）在 CJS 主进程用 `new Function('specifier','return import(specifier)')` 动态导入；模型走 OpenAI 兼容 Chat Completions（`openai.chat()`），火山方舟 Ark 已实测通过
 - MCP / UI 截图：CLI `mcp` server 暴露 `ui_screenshot`，主进程启动自动截图 + 按需截图
 - DaemonService：多项目上下文隔离、canvas render 去重、重启 reconcile、并发限制
 - 运行时设置持久化：`runtime-settings.json`（ARK key、TOS 凭证、bucket/region/endpoint、ffmpeg 路径、Agent baseUrl/key/model）
@@ -100,13 +101,16 @@
 
 - 真实 Seedream/Seedance 联调：需 `ARK_API_KEY`
 - TOS 上传真实联调：需 bucket/AK/SK（`@volcengine/tos-sdk` v2.9.1 已声明并安装）
-- `better-sqlite3` 的 `electron-rebuild`（native 模块在 Electron 主进程加载）
+- `better-sqlite3` 的 `electron-rebuild`（native 模块在 Electron 主进程加载）；当前 Electron 下 `require('better-sqlite3')` 失败，DaemonService 已自动回退 `JsonFileJobStore`（仅 console.warn）
 - 真实 FFmpeg 导出：需本机 `ffmpeg`（`FFMPEG_PATH` 已可配）
 - idempotencyKey 真正去重（目前仅内存级 activeCanvasRenders 去重）
 - SKILL.md 驱动的 Agent 动态编排（目前硬编码 3 工具，未按 skill 编排）
 - 预览播放器、WebGL 预览、素材选择 UI
 - Electron 打包、CLI 独立可执行文件打包
 - 更多集成测试与真实 Provider mock 联调
+- 修复 `config.get` IPC handler 缺失：preload 已放行、`App.tsx` 在 `openProject` 中调用，但 `main.ts`/`ipc-server.ts` 无对应 case，导致打开项目时 `config` 未加载、首次 `refreshSidebar` 被跳过
+- 清理工作区根目录的测试残留：`agent-smoke` / `demo-project`
+- 决策 Mastra 是否落地：`mastra`/`@mastra/core` 已在根 package.json 声明，但当前源码未 import/使用
 
 ## 6. 开工前仍需补 / 确认
 

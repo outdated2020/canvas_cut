@@ -172,6 +172,11 @@ function registerIpcHandlers(): void {
         const store = new ProjectStore(String(payload.path));
         return store.summary();
       }
+      case 'config.get': {
+        const store = new ProjectStore(String(payload.path));
+        await store.requireOpen();
+        return store.readConfig();
+      }
       case 'canvas.create':
         return withLockedProject(String(payload.path), async (store) => {
           await store.requireOpen();
@@ -541,8 +546,6 @@ if (!gotLock) {
     await ipcServer.start();
     logger.info('IPC server started on ' + ipcServer.endpoint);
     registerIpcHandlers();
-    logger.info('Creating main window...');
-    mainWindow = createWindow();
     logger.info('Creating main window...');
     mainWindow = createWindow();
   });
