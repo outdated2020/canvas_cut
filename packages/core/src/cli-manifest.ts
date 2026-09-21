@@ -10,6 +10,12 @@ export interface CliCommandManifest {
 }
 
 export const CLI_MANIFEST: CliCommandManifest[] = [
+  { command: 'manifest', description: 'Discover CLI commands; identifiers for canvas get/status/remove/render and job status/wait/cancel are positional arguments', parameters: [] },
+  { command: 'canvas.list', description: 'List project canvases', parameters: [] },
+  { command: 'canvas.remove', description: 'Remove canvas by positional ID', parameters: [{ name: 'canvas', type: 'string', required: true }] },
+  { command: 'asset.list', description: 'List local asset paths', parameters: [] },
+  { command: 'asset.import', description: 'Import a file and return its AssetRef for image/video input nodes', parameters: [{ name: 'file', type: 'string', required: true }] },
+  { command: 'timeline.refresh-canvases', description: 'Update rendered canvas clip references, preserving trims', parameters: [{ name: 'clip', type: 'string' }] },
   { command: 'project.init', description: 'Create a new project', parameters: [{ name: 'name', type: 'string', required: true }, { name: 'path', type: 'string' }] },
   { command: 'project.open', description: 'Open a project', parameters: [{ name: 'path', type: 'string' }] },
   { command: 'project.status', description: 'Project status', parameters: [] },
@@ -49,7 +55,7 @@ export const CLI_MANIFEST: CliCommandManifest[] = [
   { command: 'timeline.remove-track', description: 'Remove a track', parameters: [{ name: 'track', type: 'string', required: true }] },
   { command: 'timeline.add-transition', description: 'Add a transition', parameters: [{ name: 'clip', type: 'string', required: true }, { name: 'type', type: 'string', required: true }, { name: 'duration-ms', type: 'number' }] },
   { command: 'timeline.remove-transition', description: 'Remove a transition', parameters: [{ name: 'clip', type: 'string', required: true }] },
-  { command: 'timeline.export', description: 'Export the timeline', longRunning: true, parameters: [{ name: 'output', type: 'string', required: true }, { name: 'profile', type: 'string' }] },
+  { command: 'timeline.export', description: 'Export the timeline', longRunning: true, parameters: [{ name: 'output', type: 'string', required: true }, { name: 'width', type: 'number' }, { name: 'height', type: 'number' }, { name: 'fps', type: 'number' }, { name: 'crf', type: 'number' }] },
   { command: 'preset.save', description: 'Save a canvas as a preset', parameters: [{ name: 'canvas', type: 'string', required: true }, { name: 'name', type: 'string', required: true }] },
   { command: 'preset.list', description: 'List presets', parameters: [] },
   { command: 'preset.apply', description: 'Apply a preset', parameters: [{ name: 'preset', type: 'string', required: true }, { name: 'name', type: 'string' }] }

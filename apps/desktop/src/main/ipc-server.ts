@@ -7,6 +7,7 @@ import { DaemonService } from './daemon';
 import { UiScreenshotResult } from './ui-capture';
 
 export interface IpcServerOptions {
+  agentRequest?: (method: string, projectPath: string, payload: Record<string, unknown>) => Promise<unknown>;
   userDataDir: string;
   instanceId?: string;
   captureUi?: () => Promise<UiScreenshotResult>;
@@ -15,6 +16,7 @@ export interface IpcServerOptions {
 interface Envelope {
   protocolVersion: number;
   requestId: string;
+  idempotencyKey?: string;
   method: string;
   projectPath?: string;
   token?: string;
@@ -164,7 +166,7 @@ export class LocalIpcServer {
         return { pong: true, instanceId: this.instanceId };
       case 'job.submit':
         if (!projectPath) throw new Error('projectPath is required for job.submit');
-        return this.daemon.submitJob(projectPath, envelope.payload);
+        return this.daemon.submitJob(projectPath, envelope.payload, envelope.idempotencyKey);
       case 'job.status':
         if (!projectPath) throw new Error('projectPath is required for job.status');
         return this.daemon.getJob(projectPath, String(envelope.payload.jobId ?? ''));
@@ -190,6 +192,13 @@ export class LocalIpcServer {
           projectPath,
           typeof envelope.payload.status === 'string' ? envelope.payload.status : undefined
         );
+      case 'agent.start':
+      case 'agent.get-run':
+      case 'agent.history':
+      case 'agent.cancel':
+        if (!projectPath) throw new Error('projectPath is required for Agent operations');
+        if (!this.options.agentRequest) throw new Error('Agent operations are unavailable');
+        return this.options.agentRequest(envelope.method, projectPath, envelope.payload);
       case 'agent.chat':
         if (!projectPath) throw new Error('projectPath is required for agent.chat');
         if (!this.agentChat) throw new Error('Agent chat is not available in this IPC server');

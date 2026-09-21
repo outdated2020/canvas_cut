@@ -1,278 +1,77 @@
-# SKILL.md 与 Agent 编排设计
+# Agent、Skills 与 CLI 编排
 
-> 状态：设计阶段，尚未实现
-> 更新日期：2026-08-15
+更新：2026-09-08。通用本地执行版本已实现，真实 Provider、macOS 与安装包待验收。
 
-## 1. 设计目标
+## 架构
 
-- 用 SKILL.md 封装可复用的创作工作流
-- Agent 通过读取 SKILL.md 理解任务
-- Agent 通过 CLI 工具执行具体操作
-- 支持自然语言和分镜脚本输入
-
-## 2. SKILL.md 规范
-
-### 2.1 文件结构
-
-```markdown
----
-name: storyboard-to-video
-description: 把分镜脚本转成完整视频
-version: 1.0.0
-inputs:
-  - name: storyboard
-    type: text
-    required: true
-    description: 分镜脚本文本
-  - name: output_path
-    type: string
-    required: true
-    description: 导出路径
-triggers:
-  - 分镜脚本
-  - 多镜头视频
-  - storyboard
----
-
-# 执行步骤
-
-## 1. 解析分镜脚本
-读取 storyboard，提取镜头列表：描述、时长、风格。
-
-## 2. 为每个镜头创建画布
-调用 `canvas create`，并添加生成节点。
-
-## 3. 渲染画布
-调用 `canvas render` 获取 jobId，用 `job wait` 等待完成。
-
-## 4. 组装时间线
-调用 `timeline add-clip --kind canvas` 按顺序加入。
-
-## 5. 添加字幕和背景音乐
-调用 `timeline add-subtitle` 和 `timeline add-audio`。
-
-## 6. 导出
-调用 `timeline export --output {output_path}`。
+```text
+React Chat → Electron IPC → AgentSessionService → AI SDK
+                                             ↓
+                              七个基础工具 → AgentHost
+                                             ↓
+                                      LocalAgentHost
+                                             ↓
+                       PowerShell / Bash → canvas-cut CLI
+                                             ↓
+                                 core / IPC → Daemon → Worker
 ```
 
-### 2.2 frontmatter 字段
+Agent 不注册画布、渲染或时间线专用工具。视频能力由 SKILL.md 描述操作流程，CLI 提供确定性的业务命令。CLI manifest 是命令发现数据，不自动转换成模型工具。
 
-| 字段 | 必填 | 说明 |
-| --- | --- | --- |
-| name | 是 | 技能唯一名称 |
-| description | 是 | 技能用途，用于匹配 |
-| version | 否 | 版本号 |
-| inputs | 否 | 输入参数列表 |
-| outputs | 否 | 输出说明 |
-| triggers | 否 | 触发关键词 |
+## 基础执行工具
 
-输入参数结构：
+| 工具 | 行为 |
+| --- | --- |
+| list_files | 有限深度和分页列目录，不跟随目录符号链接 |
+| read_file | UTF-8 文本按行读取，单文件上限 16 MiB |
+| write_file | 原子写入，单次上限 1 MiB |
+| edit_file | 精确单次匹配替换，缺失或歧义返回错误 |
+| exec_command | 新建独立非交互 Shell，返回 processId、日志偏移、状态与退出码 |
+| read_process_output | 按字节偏移读取 stdout/stderr，单次最多等待 10 秒 |
+| terminate_process | 终止当前会话拥有的进程树 |
 
-```yaml
-inputs:
-  - name: storyboard
-    type: text
-    required: true
-    default: ""
-    description: 分镜脚本文本
-```
+Windows 使用 PowerShell，macOS 使用 Bash。cwd 默认项目目录，支持显式 cwd 和绝对路径。当前是 local-trusted 模式，不隔离文件系统或网络，也没有逐条命令审批。常见凭证环境变量从 Shell 子进程中剔除；这不构成凭证隔离，用户仍应按可信本地程序使用。
 
-### 2.3 正文约定
+命令默认最多运行 30 分钟，首次约 1 秒后返回，长任务继续轮询。各次命令不共享 Shell 变量。工具结果超过 32 KiB 时完整内容存文件，模型收到摘要和日志路径。结束、取消或关闭应用会停止该轮存活的 Shell 进程。已经提交的业务生成任务继续由 Daemon 管理，需用 CLI job cancel 单独取消。
 
-- 使用 Markdown
-- 步骤按顺序编写
-- 步骤中引用 CLI 工具或命令
-- 使用 `{input_name}` 引用输入参数
+## Skills
 
-## 3. 技能加载与匹配
+每轮扫描，优先级从低到高：
 
-技能目录：
+1. 仓库内置 skills。
+2. 用户 ~/.canvas-cut/skills。
+3. 项目 skills。
 
-- 内置技能：随应用打包
-- 全局技能：`~/.canvas-cut/skills/`
-- 项目技能：`<project>/skills/`
+每个 Skill 放在独立目录的 SKILL.md 中；必需 YAML 字段 name、description，支持 BOM、LF/CRLF、数组及多行值。同名 Skill 由高优先级覆盖，解析失败产生诊断而不终止其他 Skill 加载。
 
-匹配方式：由 LLM 直接选择技能。
+系统提示仅提供名称、说明、文件路径。模型使用 read_file 按需读取正文，再按流程调用 CLI。内置 canvas-cut 提供图编辑和时间线操作，image-to-video 与 storyboard-to-video 描述组合工作流。Skill 不是强制流程引擎，真实模型遵循情况需要场景评测。
 
-- 提供 `list_skills` 和 `read_skill` 工具
-- Agent 根据需要列出技能、读取 SKILL.md
-- 暂不引入关键词匹配或向量检索
+## CLI 契约
 
-## 4. CLI 工具注册
+桌面启动时在 userData/agent/bin 写入 canvas-cut launcher，绑定应用运行时与仓库构建的 CLI，并将此目录加入 Agent Shell PATH。开发构建需生成 apps/cli/dist/index.js；安装包资源定位和签名另行完成。
 
-Agent 不直接执行字符串命令，而是调用类型化工具：
+命令发现使用 canvas-cut manifest --json 或命令 --help。业务结果 stdout 使用 {ok,data} / {ok:false,error}，诊断日志写 stderr，失败退出码非零。复杂参数使用 UTF-8 JSON 文件和 --params-file，避免不同 Shell 的内联 JSON 转义问题。
 
-1. 从 CLI manifest 生成工具定义
-2. 每个命令对应一个工具，参数为 JSON schema
-3. 工具执行时调用 CLI
+渲染及生成返回 jobId，需 job wait/status 检查终态。job wait 的 IPC 传输期限比业务等待长 5 秒。显式 --idempotency-key 可跨进程复用；未知提交结果先查状态。--dry-run 仅允许生成、画布渲染、时间线导出，其余命令拒绝且不执行修改。
 
-```ts
-const tools = {
-  canvas_create: { ... },
-  canvas_node_add: { ... },
-  canvas_render: { ... },
-  timeline_add_clip: { ... },
-  job_wait: { ... },
-  timeline_export: { ... }
-}
-```
+## 会话与桌面接口
 
-## 5. Agent 编排流程
+AgentSessionService 按规范化项目路径与 conversationId 分隔会话，写入 userData/agent/sessions。会话保存 user/assistant 消息、tool-call/tool-result、带序号的事件与运行状态；配置密钥不写入历史。
 
-```mermaid
-graph TD
-    U[用户输入] --> I[意图理解]
-    I --> S[匹配 SKILL.md]
-    S --> P[生成执行计划]
-    P --> C{需要用户确认?}
-    C -->|是| W[等待确认]
-    C -->|否| E[调用 CLI 工具]
-    W --> E
-    E --> R[检查结果]
-    R -->|失败| H[错误处理 / 重试]
-    R -->|成功| N{还有步骤?}
-    H --> E
-    N -->|是| E
-    N -->|否| D[返回结果]
-```
+- agent.start：提交并立即返回 runId；同一会话禁止并发提交。
+- agent.get-run：按 after 序号获取增量事件和运行状态。
+- agent.cancel：中断模型请求并终止 Shell 进程。
+- agent.history：加载持久化消息和事件。
+- agent.chat：兼容旧调用，等待同一服务返回最终结果。
 
-任务分类：
+模型每次返回的工具调用先落盘，再执行副作用，再落盘结果。重启发现 running 时标记 interrupted，并为未完成调用补充明确的中断结果；绝不自动重放。用户继续时要求模型先查看项目和任务状态。
 
-- 简单任务：直接执行，不等待确认
-- 复杂任务：先展示执行计划，用户确认后执行
+默认每轮最多 64 步；上下文达到 200000 字符时保存并停止。新一轮超过 120000 字符时将完整旧历史归档，保留路径、标识符、状态和可容纳的最近一轮。这是字符预算和结构化摘要，不是 token 精确计算或语义压缩。
 
-职责：
+桌面当前使用默认会话，加载真实历史、显示工具步骤及结果、轮询运行状态、提供停止按钮，并在工具返回后刷新项目视图。尚未提供会话切换和 token 级流式显示。
 
-- 意图理解：判断用户想完成什么任务
-- 技能匹配：找到最合适的 SKILL.md
-- 计划生成：把技能步骤转成工具调用序列
-- 工具调用：执行 CLI
-- 错误处理：失败重试、参数修正
-- 状态跟踪：记录已完成步骤
+## 后续扩展与验证
 
-## 6. 状态与错误处理
+AgentHost 将执行能力与模型循环分开。后续实现 SandboxAgentHost 时补充文件挂载、目录权限、网络控制、资源配额和凭证代理，保持现有工具协议。Web Search 后续作为基础工具接入，需提供来源链接和检索服务配置。
 
-- 任务状态持久化，支持中断恢复
-- CLI 工具失败时，Agent 根据错误码决定重试或修正参数
-- 生成任务通过 jobId 轮询
-- 复杂任务执行前展示计划并等待确认，简单任务直接执行
-- 同一应用内支持多个对话并发；每个对话是独立会话，任务通过 `conversationId` 归属，全局并发由主进程 job 队列统一控制
-
-## 7. 框架选型
-
-- 已确定：Mastra
-- Mastra 提供 Agent + Workflow + Tools + Memory，支持状态持久化与中断恢复
-- 模型访问层基于 Vercel AI SDK（`ai`）与 `@ai-sdk/openai`
-- 工具参数校验使用 zod
-
-### 7.1 LLM 接入
-
-- 通过 OpenAI 兼容接口接入
-- 配置 Base URL + API Key
-- 不绑定具体供应商
-
-## 8. 已确认决策
-
-- LLM 接入：OpenAI 兼容 Base URL + API Key
-- human-in-the-loop：复杂任务确认，简单任务直接执行
-
-## 9. 待确认
-
-暂无（火山引擎具体接口等见 PROVIDER_ADAPTER_DESIGN.md）
-
-## 10. Agent 工具列表
-
-### 10.1 文件工具
-
-- 仅允许访问当前项目目录
-- `read_file(path)`
-- `write_file(path, content)`
-- `list_files(dir)`
-- `read_json(path)`
-- `write_json(path, data)`
-
-### 10.2 命令执行
-
-- `run_shell(command, args, cwd)`
-- Windows 使用 PowerShell，macOS 使用 bash
-- 该工具是类型化工具中的显式例外
-- 安全限制：命令白名单，危险操作需用户确认
-
-### 10.3 任务管理
-
-- `write_todo(items)`：写入或更新当前任务的待办列表
-
-### 10.4 技能工具
-
-- `list_skills()`：列出可用技能
-- `read_skill(name)`：读取指定技能的 SKILL.md
-
-### 10.5 CLI 工具
-
-项目：
-
-- `project_init`
-- `project_open`
-- `project_status`
-
-生成：
-
-- `generate_text_to_image`
-- `generate_text_to_video`
-- `generate_image_to_image`
-- `generate_image_to_video`
-- `generate_video_to_video`
-
-任务：
-
-- `job_status`
-- `job_wait`
-- `job_cancel`
-- `job_list`
-
-画布：
-
-- `canvas_create`
-- `canvas_get`
-- `canvas_node_add`
-- `canvas_node_remove`
-- `canvas_node_set_param`
-- `canvas_edge_connect`
-- `canvas_edge_remove`
-- `canvas_render`
-- `canvas_status`
-
-时间线：
-
-- `timeline_init`
-- `timeline_get`
-- `timeline_add_track`
-- `timeline_add_clip`
-- `timeline_add_subtitle`
-- `timeline_add_audio`
-- `timeline_split_clip`
-- `timeline_trim_clip`
-- `timeline_move_clip`
-- `timeline_set_transform`
-- `timeline_set_opacity`
-- `timeline_set_speed`
-- `timeline_set_volume`
-- `timeline_remove_clip`
-- `timeline_remove_track`
-- `timeline_add_transition`
-- `timeline_remove_transition`
-- `timeline_export`
-
-预设：
-
-- `preset_save`
-- `preset_list`
-- `preset_apply`
-
-> 工具清单以 CLI manifest 自动生成为准，本表仅作示意；`canvas_render` 支持 `force` 与 `node` 参数。
-
-### 10.6 工具约定
-
-- 工具参数使用 zod schema
-- 错误返回统一结构
-- CLI 工具映射到对应命令
+测试覆盖真实 AI SDK/mock HTTP、文件操作、中文 Shell 日志、超时与停止、会话恢复、CLI launcher、参数文件和 dry-run，以及真实 Shell/CLI/IPC/Daemon/Worker 与 fake Provider 的渲染闭环。真实模型规划、多镜头内容质量、付费生成、真实 FFmpeg、Electron UI 交互及跨平台分发另行验收。

@@ -120,6 +120,35 @@ const icons: Record<string, ReactNode> = {
       <path d="M18 5.5v13L9 12z" fill="currentColor" stroke="none" />
     </>
   ),
+  stepBack: (
+    <>
+      <path d="M6 5v14" />
+      <path d="M12 5v14" />
+      <path d="M18 5.5v13L9 12z" fill="currentColor" stroke="none" />
+    </>
+  ),
+  stepFwd: (
+    <>
+      <path d="M6 5.5v13L15 12z" fill="currentColor" stroke="none" />
+      <path d="M12 5v14" />
+      <path d="M18 5v14" />
+    </>
+  ),
+  loop: (
+    <>
+      <path d="M17 4v4h-4" />
+      <path d="M7 20v-4h4" />
+      <path d="M7.5 7.5A6.5 6.5 0 0 1 18 9" />
+      <path d="M16.5 16.5A6.5 6.5 0 0 1 6 15" />
+    </>
+  ),
+  audio: (
+    <>
+      <path d="M12 3v13" />
+      <path d="M8 8v3M16 8v3" />
+      <path d="M4 12v1a8 8 0 0 0 16 0v-1" />
+    </>
+  ),
   skipFwd: (
     <>
       <path d="M18 5v14" />

@@ -267,6 +267,8 @@ export interface CanvasClip {
   canvasGraphHash: string;
   startMs: number;
   durationMs: number;
+  inMs?: number;
+  outMs?: number;
   renderedAsset?: AssetRef;
   status: 'fresh' | 'stale' | 'rendering' | 'failed';
   transform?: Transform;
@@ -358,6 +360,7 @@ export interface NodeRenderStep {
   type: NodeType;
   cacheKey: string;
   cacheHit: boolean;
+  force?: boolean;
   providerJobType: GenerationType | null;
 }
 
@@ -376,6 +379,7 @@ export interface RenderPlan {
   width: number;
   height: number;
   fps: number;
+  crf?: number;
   segments: RenderSegment[];
   tracks: Track[];
 }

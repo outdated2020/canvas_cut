@@ -172,7 +172,7 @@ export async function canvasRender(options: CliOptions): Promise<unknown> {
     return buildCanvasRenderPlan(graph, project.settings, { force, nodeId });
   }
 
-  const client = new LocalIpcClient(store.paths.root);
+  const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));
   return client.request('job.submit', {
     type: 'canvas.render',
     canvasId,

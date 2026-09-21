@@ -19,6 +19,7 @@ export interface TimelineRenderOptions {
   outputPath: string;
   projectRoot: string;
   settings: ProjectSettings;
+  crf?: number;
 }
 
 type VideoClip = MediaClip | CanvasClip;
@@ -89,6 +90,12 @@ export function buildRenderPlan(
   timeline: TimelineFile,
   options: TimelineRenderOptions
 ): RenderPlan {
+  const { width, height, fps } = options.settings;
+  if (![width, height].every((v) => Number.isInteger(v) && v > 0 && v <= 8192 && v % 2 === 0)
+      || !Number.isFinite(fps) || fps <= 0 || fps > 120
+      || (options.crf !== undefined && (!Number.isInteger(options.crf) || options.crf < 0 || options.crf > 51))) {
+    throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Invalid export dimensions, FPS or CRF');
+  }
   const videoClips = collectVideoClips(timeline);
   const audioClips = collectAudioClips(timeline);
   const subtitleClips = collectSubtitleClips(timeline);
@@ -138,6 +145,7 @@ export function buildRenderPlan(
     width: options.settings.width,
     height: options.settings.height,
     fps: options.settings.fps,
+    crf: options.crf ?? 18,
     segments,
     tracks: timeline.tracks
   };
@@ -149,6 +157,8 @@ export async function assertRenderAssetsExist(plan: RenderPlan): Promise<void> {
     for (const clip of [...segment.activeVideo, ...segment.activeAudio]) {
       if (clip.kind === 'media') {
         assets.add(clip.asset.path);
+      } else if (clip.renderedAsset) {
+        assets.add(clip.renderedAsset.path);
       }
     }
   }
@@ -163,7 +173,7 @@ export async function resolveCanvasClipsInTimeline(
   projectRoot: string,
   timeline: TimelineFile
 ): Promise<TimelineFile> {
-  const resolved = { ...timeline, tracks: timeline.tracks.map((track) => ({ ...track, clips: [...track.clips] })) };
+  const resolved = structuredClone(timeline);
 
   for (const track of resolved.tracks) {
     for (const clip of track.clips) {
@@ -188,9 +198,6 @@ export async function resolveCanvasClipsInTimeline(
       }
       clip.renderedAsset = outputNode.cachedResult;
       clip.status = 'fresh';
-      if (outputNode.cachedResult.durationMs) {
-        clip.durationMs = outputNode.cachedResult.durationMs;
-      }
     }
   }
 

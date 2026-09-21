@@ -37,7 +37,7 @@ export async function generateTextToImage(options: CliOptions): Promise<unknown>
   if (options.dryRun) {
     return { type: 'generate.text-to-image', request };
   }
-  const client = new LocalIpcClient(store.paths.root);
+  const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));
   return client.request('job.submit', { type: 'generate.text-to-image', request });
 }
 
@@ -60,7 +60,7 @@ export async function generateTextToVideo(options: CliOptions): Promise<unknown>
   if (options.dryRun) {
     return { type: 'generate.text-to-video', request };
   }
-  const client = new LocalIpcClient(store.paths.root);
+  const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));
   return client.request('job.submit', { type: 'generate.text-to-video', request });
 }
 
@@ -87,7 +87,7 @@ export async function generateImageToImage(options: CliOptions): Promise<unknown
   if (options.dryRun) {
     return { type: 'generate.image-to-image', request };
   }
-  const client = new LocalIpcClient(store.paths.root);
+  const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));
   return client.request('job.submit', { type: 'generate.image-to-image', request });
 }
 
@@ -116,7 +116,7 @@ export async function generateImageToVideo(options: CliOptions): Promise<unknown
   if (options.dryRun) {
     return { type: 'generate.image-to-video', request };
   }
-  const client = new LocalIpcClient(store.paths.root);
+  const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));
   return client.request('job.submit', { type: 'generate.image-to-video', request });
 }
 
@@ -149,6 +149,6 @@ export async function generateVideoToVideo(options: CliOptions): Promise<unknown
   if (options.dryRun) {
     return { type: 'generate.video-to-video', request };
   }
-  const client = new LocalIpcClient(store.paths.root);
+  const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));
   return client.request('job.submit', { type: 'generate.video-to-video', request });
 }

@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$SkipBuild
 )
 
@@ -41,20 +41,10 @@ $viteErrLog = Join-Path $env:TEMP "canvas-cut-vite-err.log"
 
 Set-Location $desktopDir
 
-# 先清理可能残留的旧 vite 进程（端口 5173 上的）
-$orphanVites = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -match "vite\.js.*5173" }
-foreach ($p in $orphanVites) {
-    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
-}
-if ($orphanVites -and $orphanVites.Count -gt 0) {
-    Write-Host "Cleaned up $($orphanVites.Count) leftover vite process(es)"
-}
-
 # 启动 vite dev server（隐藏窗口，输出重定向到日志文件）
 $viteProcess = Start-Process `
     -FilePath $nodeExe `
-    -ArgumentList "`"$viteJs`"", "--host", "127.0.0.1", "--port", "5173" `
+    -ArgumentList "`"$viteJs`"", "--host", "127.0.0.1", "--port", "5173", "--strictPort" `
     -WorkingDirectory $desktopDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $viteOutLog `
@@ -63,7 +53,21 @@ $viteProcess = Start-Process `
 
 try {
     # 等待 vite 启动
-    Start-Sleep -Seconds 3
+    $ready = $false
+    for ($attempt = 0; $attempt -lt 60; $attempt++) {
+        $viteProcess.Refresh()
+        if ($viteProcess.HasExited) {
+            Get-Content -LiteralPath $viteErrLog -ErrorAction SilentlyContinue | Write-Host
+            throw "Vite failed to start. Port 5173 may already be in use; close the existing dev server and retry."
+        }
+        try {
+            $response = Invoke-WebRequest -Uri "http://127.0.0.1:5173/@vite/client" -UseBasicParsing -TimeoutSec 1
+            if ($response.StatusCode -eq 200) { $ready = $true; break }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $ready) { throw "Vite did not become ready. See $viteErrLog" }
+    Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
     $env:VITE_DEV_SERVER_URL = "http://127.0.0.1:5173"
     Write-Host "Starting Canvas Cut desktop in development mode..."
@@ -74,10 +78,14 @@ try {
     if (Test-Path -LiteralPath $electronExe) {
         $electronProc = Start-Process -FilePath $electronExe -ArgumentList "." -WorkingDirectory $desktopDir -PassThru -Wait
         $LASTEXITCODE = $electronProc.ExitCode
+        if ($LASTEXITCODE -ne 0) { throw "Electron exited with code $LASTEXITCODE" }
+        Write-Host "Canvas Cut exited or handed off to an existing instance. Close the existing app before restarting in development mode."
     }
     elseif (Test-Path -LiteralPath $electronCmd) {
         $electronProc = Start-Process -FilePath $electronCmd -ArgumentList "." -WorkingDirectory $desktopDir -PassThru -Wait
         $LASTEXITCODE = $electronProc.ExitCode
+        if ($LASTEXITCODE -ne 0) { throw "Electron exited with code $LASTEXITCODE" }
+        Write-Host "Canvas Cut exited or handed off to an existing instance. Close the existing app before restarting in development mode."
     }
     else {
         Write-Error "Electron is not installed. Run 'npm install' first."
@@ -88,12 +96,6 @@ finally {
     # 清理 vite 进程
     if ($viteProcess -and -not $viteProcess.HasExited) {
         Stop-Process -Id $viteProcess.Id -Force -ErrorAction SilentlyContinue
-    }
-    # 保险：再扫一遍所有 5173 端口的 vite 进程
-    $remaining = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match "vite\.js.*5173" }
-    foreach ($p in $remaining) {
-        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
     }
     Write-Host "Vite dev server stopped."
 }

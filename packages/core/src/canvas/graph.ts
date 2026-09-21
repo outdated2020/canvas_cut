@@ -54,6 +54,9 @@ export function refreshGraphHash(graph: CanvasGraph): void {
 export function bumpGraphVersion(graph: CanvasGraph): void {
   graph.version += 1;
   refreshGraphHash(graph);
+  for (const node of graph.nodes) {
+    if (node.type === 'output') { node.status = 'idle'; node.cachedResult = undefined; }
+  }
 }
 
 export function createNode(type: NodeType, params: Record<string, unknown> = {}, id: string = randomUUID()): CanvasNode {

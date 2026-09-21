@@ -48,5 +48,25 @@
       "sizeBytes": 7190306
     },
     "createdAt": 1787593604615
+  },
+  "e7381965264af44cf83c011b3c56848d177b186d9cecf1de5d32d196b7c0b44e": {
+    "cacheKey": "e7381965264af44cf83c011b3c56848d177b186d9cecf1de5d32d196b7c0b44e",
+    "asset": {
+      "id": "78b67ba2e33d197f6cacdbca07bb26e5d3f4038265e606e8dd4fd36e418322ed",
+      "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-3f818580-de5b-4820-8589-f1eecec2be83.png",
+      "type": "image",
+      "sizeBytes": 7007721
+    },
+    "createdAt": 1788883887918
+  },
+  "ec8d9141ebe982b9213888dcb0765cc8c06250d67897f49e3fe3d92512486545": {
+    "cacheKey": "ec8d9141ebe982b9213888dcb0765cc8c06250d67897f49e3fe3d92512486545",
+    "asset": {
+      "id": "415da8e3bd5812768422059772aa3d80e921400dffa27bab4488a049220b8c1b",
+      "path": "C:\\Users\\liqijun\\Desktop\\canvas_cut\\demo-project\\assets\\volcengine-cgt-20260910023151-rzyda.mp4",
+      "type": "video",
+      "sizeBytes": 13342828
+    },
+    "createdAt": 1788978867697
   }
 }

@@ -97,3 +97,33 @@ test('CLI timeline add-track and get', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('CLI manifest, params-file, boolean flags and unsupported dry-run are machine-readable',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'cli 中文 space-'));
+ try {
+  runCli(['project','init','--name','Test','--path',dir,'--json']);
+  assert.ok(runCli(['--json','manifest']).data.commands.length>30);
+  const rejected=spawnSync(process.execPath,[cliPath,'canvas','create','--project',dir,'--dry-run','--json'],{encoding:'utf8'});
+  assert.notEqual(rejected.status,0);assert.equal(JSON.parse(rejected.stdout).ok,false);
+  assert.equal(runCli(['canvas','list','--project',dir,'--json']).data.length,0);
+  const created=runCli(['canvas','create','--project',dir,'--json']).data;
+  const params=join(dir,'参数 file.json');
+  await (await import('node:fs/promises')).writeFile(params,'\ufeff'+JSON.stringify({text:'中文 "quoted"\nnext'}));
+  const added=runCli(['canvas','node','add','--canvas',created.canvasId,'--type','text-input','--params-file',params,'--project',dir,'--json']);
+  assert.ok(added.data.nodeId);
+  const graph=runCli(['canvas','get',created.canvasId,'--project',dir,'--json']).data;
+  assert.equal(graph.nodes[0].params.text,'中文 "quoted"\nnext');
+ } finally {await rm(dir,{recursive:true,force:true});}
+});
+
+test('job wait transport exceeds requested job deadline and propagates failed status',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'cli-wait-'));
+ const {LocalIpcClient}=(await import('../apps/cli/dist/ipc/client.js')).default;
+ const {jobWait}=(await import('../apps/cli/dist/commands/job.js')).default;
+ const original=LocalIpcClient.prototype.request;
+ try {
+  runCli(['project','init','--name','Wait','--path',dir,'--json']);
+  LocalIpcClient.prototype.request=async(_method,payload,timeout)=>{assert.equal(payload.timeoutMs,1800000);assert.equal(timeout,1805000);return {status:'failed',error:{message:'provider failed'}};};
+  await assert.rejects(jobWait({project:dir,positionals:['job'],flags:{},json:true,dryRun:false,help:false}),/provider failed/);
+ } finally {LocalIpcClient.prototype.request=original;await rm(dir,{recursive:true,force:true});}
+});

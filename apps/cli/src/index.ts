@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { CLI_MANIFEST, logger, CanvasCutError, ERROR_CODES } from '@canvas-cut/core';
+import { manifest, canvasList, assetList, assetImport, refreshCanvasClips } from './commands/discovery';
 import { parseArgs, CliOptions } from './args';
 import { exitForResult, failure, printResult, success } from './output';
 import { projectInit, projectOpen, projectStatus } from './commands/project';
@@ -49,6 +51,11 @@ import { runMcpServer } from './mcp/server';
 type Handler = (options: CliOptions) => Promise<unknown> | unknown;
 
 const dispatch = new Map<string, Handler>([
+  ['manifest', manifest],
+  ['canvas list', canvasList],
+  ['asset list', assetList],
+  ['asset import', assetImport],
+  ['timeline refresh-canvases', refreshCanvasClips],
   ['project init', projectInit],
   ['project open', projectOpen],
   ['project status', projectStatus],
@@ -119,7 +126,9 @@ function printUsage(): void {
       '  canvas create|get|remove|node add|node remove|node set-param|edge connect|edge remove|render|status',
       '  timeline init|get|add-track|add-clip|add-subtitle|add-audio|split-clip|trim-clip|move-clip|set-transform|set-opacity|set-speed|set-volume|remove-clip|remove-track|add-transition|remove-transition|export',
       '  preset save|list|apply',
-      '  mcp                          start MCP stdio server (ui_screenshot tool)',
+      '  manifest                     list commands and parameter schemas',
+      '  asset list|import',
+      '  mcp                          start MCP stdio server (Agent conversation and UI screenshot tools)',
       '',
       'Global options: --project <path> --json --dry-run --help',
       ''
@@ -130,9 +139,14 @@ function printUsage(): void {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const options = parseArgs(argv);
+  logger.setConsoleStderr(true);
 
   if (options.help || options.positionals.length === 0) {
-    printUsage();
+    if (options.help && options.positionals.length) {
+      const command = resolveCommand(options.positionals)?.command;
+      const detail = CLI_MANIFEST.find((item) => item.command === command?.replace(/ /g, '.'));
+      printResult(success({ usage: command ? 'canvas-cut ' + command + ' [options]' : 'canvas-cut <command> [options]', command: detail, ...manifest() }), options.json);
+    } else printUsage();
     process.exitCode = options.help ? 0 : 2;
     return;
   }
@@ -151,12 +165,14 @@ async function main(): Promise<void> {
     positionals: resolved.args
   };
 
-  if (resolved.command === 'mcp') {
+  if (resolved.command === 'mcp' && !options.dryRun) {
     await runMcpServer(commandOptions);
     return;
   }
 
   try {
+    const dryRunSupported = resolved.command.startsWith('generate ') || ['canvas render', 'timeline export'].includes(resolved.command);
+    if (options.dryRun && !dryRunSupported) throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, '--dry-run is not supported by this command; no changes made');
     const data = await handler(commandOptions);
     const result = success(data);
     printResult(result, options.json);

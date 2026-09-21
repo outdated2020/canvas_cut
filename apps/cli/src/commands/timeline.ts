@@ -102,7 +102,9 @@ export async function timelineAddClip(options: CliOptions): Promise<unknown> {
       );
     }
     const canvas = await store.readCanvas(canvasId);
-    const clip = addCanvasClip(track, canvas, startMs, durationMs);
+    const asset = canvas.nodes.find((node) => node.type === 'output' && node.status === 'succeeded')?.cachedResult;
+    if (!asset) throw new CanvasCutError(ERROR_CODES.RENDER_FAILED, 'Canvas must finish rendering before adding it to the timeline');
+    const clip = addCanvasClip(track, canvas, startMs, durationMs, asset);
     await store.writeTimeline(timeline);
     return { clipId: clip.id };
   });
@@ -321,16 +323,17 @@ export async function timelineExport(options: CliOptions): Promise<unknown> {
   const plan = buildRenderPlan(timeline, {
     outputPath,
     projectRoot: store.paths.root,
-    settings: project.settings
+    settings: { ...project.settings, width: numberFlag(options.flags, 'width', project.settings.width)!, height: numberFlag(options.flags, 'height', project.settings.height)!, fps: numberFlag(options.flags, 'fps', project.settings.fps)! },
+    crf: numberFlag(options.flags, 'crf', 18)
   });
 
   if (options.dryRun) {
     return plan;
   }
 
-  const client = new LocalIpcClient(store.paths.root);
+  const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));
   return client.request('job.submit', {
     type: 'timeline.export',
-    outputPath
+    outputPath, width: plan.width, height: plan.height, fps: plan.fps, crf: plan.crf
   });
 }

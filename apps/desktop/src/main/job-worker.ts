@@ -1,5 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import {
   AssetRef,
   buildCanvasRenderPlan,
@@ -24,6 +25,7 @@ import {
   assertRenderAssetsExist,
   ensureOutputDir,
   runFfmpeg,
+  probeMedia,
   resolveCanvasClipsInTimeline,
   JobRecord
 } from '@canvas-cut/core';
@@ -40,6 +42,14 @@ interface WorkerOptions {
 export class JobWorker {
   private timer: NodeJS.Timeout | undefined;
   private scheduling = false;
+  private controllers = new Map<string, AbortController>();
+  private remoteTasks = new Map<string, { provider: GenerationProvider; id: string }>();
+
+  async cancel(jobId: string): Promise<void> {
+    this.controllers.get(jobId)?.abort();
+    const remote = this.remoteTasks.get(jobId);
+    if (remote) await remote.provider.cancelJob(remote.id);
+  }
   private active = new Set<Promise<void>>();
   private readonly maxConcurrency: number;
 
@@ -76,7 +86,7 @@ export class JobWorker {
       this.cleanupFinished();
       const available = this.maxConcurrency - this.active.size;
       if (available <= 0) return;
-      const pending = this.jobStore.list({ status: 'pending', limit: available });
+      const pending = this.jobStore.list({ status: 'pending', parentId: null, limit: available });
       for (const job of pending) {
         const promise = this.process(job).finally(() => {
           this.active.delete(promise);
@@ -97,6 +107,10 @@ export class JobWorker {
   private async reconcile(): Promise<void> {
     const running = this.jobStore.list({ status: 'running', limit: 10_000 });
     for (const job of running) {
+      if (job.type.startsWith('generate.') && job.provider_task_id) {
+        this.jobStore.update(job.id, { status: 'pending', updated_at: Date.now() });
+        continue;
+      }
       this.jobStore.update(job.id, {
         status: 'failed',
         error: JSON.stringify({
@@ -110,6 +124,7 @@ export class JobWorker {
   }
 
   private async process(job: JobRecord): Promise<void> {
+    this.controllers.set(job.id, new AbortController());
     logger.info('JobWorker processing: id=' + job.id + ' type=' + job.type);
     const now = Date.now();
     this.jobStore.update(job.id, { status: 'running', updated_at: now });
@@ -119,15 +134,14 @@ export class JobWorker {
       } else if (job.type === 'canvas.render') {
         await this.processCanvasRender(job);
       } else if (job.type === 'canvas.node') {
-        // child job handled by parent processCanvasRender; skip
-        this.jobStore.update(job.id, { status: 'succeeded', progress: 100, updated_at: Date.now() });
-        return;
+        throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Canvas nodes must be executed by their parent');
       } else if (job.type === 'timeline.export') {
         await this.processTimelineExport(job);
       } else {
         throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, `Unknown job type: ${job.type}`);
       }
     } catch (error) {
+      if (this.jobStore.get(job.id)?.status === 'cancelled') return;
       logger.error('JobWorker process failed: id=' + job.id + ' type=' + job.type + ' error=' + ((error as Error).message || String(error)));
       const structured = toStructuredError(error);
       this.jobStore.update(job.id, {
@@ -138,6 +152,7 @@ export class JobWorker {
       if (job.type === 'canvas.render') {
         const children = this.jobStore.list({ parentId: job.id, limit: 10_000 });
         for (const child of children) {
+          if (child.status === 'succeeded' || child.status === 'cancelled') continue;
           this.jobStore.update(child.id, {
             status: 'failed',
             error: JSON.stringify(structured),
@@ -145,6 +160,9 @@ export class JobWorker {
           });
         }
       }
+    } finally {
+      this.controllers.delete(job.id);
+      this.remoteTasks.delete(job.id);
     }
   }
 
@@ -157,7 +175,11 @@ export class JobWorker {
       | ImageToVideoRequest
       | VideoToVideoRequest;
     const provider = await this.createProvider();
-    const providerJob = await this.callProvider(provider, job.type, request);
+    const providerJob = job.provider_task_id
+      ? await provider.getJob(job.provider_task_id, generationTypeForJob(job.type))
+      : await this.callProvider(provider, job.type, request);
+    this.remoteTasks.set(job.id, { provider, id: providerJob.jobId });
+    if (this.jobStore.get(job.id)?.status === 'cancelled') { await provider.cancelJob(providerJob.jobId); return; }
 
     if (providerJob.status === 'succeeded') {
       logger.info('JobWorker ' + job.id + ' generation succeeded (sync)');
@@ -260,6 +282,7 @@ export class JobWorker {
       throw new CanvasCutError(ERROR_CODES.EDGE_INVALID, `Canvas reference cycle detected at ${canvasId}`);
     }
     visited.add(canvasId);
+    if (visited.size > 2) throw new CanvasCutError(ERROR_CODES.EDGE_INVALID, 'Canvas nesting is limited to two levels');
     const graph = await this.store.readCanvas(canvasId);
     const project = await this.store.readProject();
     const cache = new FileNodeCacheStore(this.store.paths.cacheDir);
@@ -276,30 +299,42 @@ export class JobWorker {
       graph,
       project.settings,
       {
+        onNodeResult: (node, asset) => {
+          if (!parentJobId || this.jobStore.get(parentJobId)?.status === 'cancelled') return;
+          const children = this.jobStore.list({ parentId: parentJobId, limit: 10_000 });
+          const child = children.find((item) => item.node_id === node.id && item.canvas_id === canvasId);
+          if (child) this.jobStore.update(child.id, { status: 'succeeded', progress: 100, result: JSON.stringify(asset), updated_at: Date.now() });
+          const completed = this.jobStore.list({ parentId: parentJobId, limit: 10_000 }).filter((item) => item.status === 'succeeded').length;
+          this.jobStore.update(parentJobId, { progress: children.length ? completed / children.length * 100 : 0, updated_at: Date.now() });
+        },
         execute: async (node, request) => {
+          if (parentJobId && this.jobStore.get(parentJobId)?.status === 'cancelled') throw new Error('Job cancelled');
+          const child = parentJobId ? this.jobStore.list({ parentId: parentJobId }).find((item) => item.node_id === node.id) : undefined;
+          if (child) this.jobStore.update(child.id, { status: 'running', updated_at: Date.now() });
           const type = node.type;
           switch (type) {
             case 'text-to-image':
               return (await provider.textToImage(request as TextToImageRequest)).result as AssetRef;
             case 'text-to-video':
-              return await this.executeVideoGeneration(provider, 'text-to-video', request as TextToVideoRequest);
+              return await this.executeVideoGeneration(provider, 'text-to-video', request as TextToVideoRequest, parentJobId);
             case 'image-to-image':
               return (await provider.imageToImage(request as ImageToImageRequest)).result as AssetRef;
             case 'image-to-video':
-              return await this.executeVideoGeneration(provider, 'image-to-video', request as ImageToVideoRequest);
+              return await this.executeVideoGeneration(provider, 'image-to-video', request as ImageToVideoRequest, parentJobId);
             case 'video-to-video':
-              return await this.executeVideoGeneration(provider, 'video-to-video', request as VideoToVideoRequest);
+              return await this.executeVideoGeneration(provider, 'video-to-video', request as VideoToVideoRequest, parentJobId);
             default:
               throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, `Unsupported generation node: ${type}`);
           }
         },
         renderCanvasReference: async (childCanvasId) =>
-          this.renderCanvas(childCanvasId, undefined, undefined, new Set(visited))
+          this.renderCanvas(childCanvasId, parentJobId, undefined, new Set(visited))
       },
       cache
     );
 
-    if (parentJobId) {
+    if (parentJobId && this.jobStore.get(parentJobId)?.status === 'cancelled') throw new Error('Job cancelled');
+    if (parentJobId && visited.size === 1) {
       const children = this.jobStore.list({ parentId: parentJobId, limit: 10_000 });
       for (const child of children) {
         const value = child.node_id ? execution.nodeResults[child.node_id] : undefined;
@@ -348,7 +383,8 @@ export class JobWorker {
   private async executeVideoGeneration(
     provider: GenerationProvider,
     type: 'text-to-video' | 'image-to-video' | 'video-to-video',
-    request: TextToVideoRequest | ImageToVideoRequest | VideoToVideoRequest
+    request: TextToVideoRequest | ImageToVideoRequest | VideoToVideoRequest,
+    parentJobId?: string
   ): Promise<AssetRef> {
     const job =
       type === 'text-to-video'
@@ -357,6 +393,8 @@ export class JobWorker {
           ? await provider.imageToVideo(request as ImageToVideoRequest)
           : await provider.videoToVideo(request as VideoToVideoRequest);
 
+    if (parentJobId) this.remoteTasks.set(parentJobId, { provider, id: job.jobId });
+    if (parentJobId && this.jobStore.get(parentJobId)?.status === 'cancelled') { await provider.cancelJob(job.jobId); throw new Error('Job cancelled'); }
     if (job.status === 'succeeded') {
       if (!job.result) throw new CanvasCutError(ERROR_CODES.PROVIDER_ERROR, 'Video generation returned no result');
       return job.result;
@@ -365,6 +403,7 @@ export class JobWorker {
     let delay = 1000;
     const startedAt = Date.now();
     while (true) {
+      if (parentJobId && this.jobStore.get(parentJobId)?.status === 'cancelled') throw new Error('Job cancelled');
       if (Date.now() - startedAt > 30 * 60 * 1000) {
         throw new CanvasCutError(ERROR_CODES.GENERATION_TIMEOUT, 'Video generation timed out', { retryable: true });
       }
@@ -386,7 +425,7 @@ export class JobWorker {
   }
 
   private async processTimelineExport(job: JobRecord): Promise<void> {
-    const snapshot = JSON.parse(job.request_snapshot ?? '{}') as { outputPath?: string };
+    const snapshot = JSON.parse(job.request_snapshot ?? '{}') as { outputPath?: string; width?: number; height?: number; fps?: number; crf?: number };
     if (!snapshot.outputPath) {
       throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Timeline export is missing outputPath');
     }
@@ -396,13 +435,28 @@ export class JobWorker {
     const plan = buildRenderPlan(timeline, {
       outputPath: snapshot.outputPath,
       projectRoot: this.store.paths.root,
-      settings: project.settings
+      settings: { ...project.settings, width: snapshot.width ?? project.settings.width, height: snapshot.height ?? project.settings.height, fps: snapshot.fps ?? project.settings.fps },
+      crf: snapshot.crf
     });
     await assertRenderAssetsExist(plan);
     await ensureOutputDir(plan.outputPath);
-    const ffmpegArgs = buildFfmpegArgs(plan);
+    const audioPaths = new Set<string>();
+    for (const track of timeline.tracks) {
+      for (const clip of track.clips) {
+        const asset = clip.kind === 'media' ? clip.asset : clip.kind === 'canvas' ? clip.renderedAsset : undefined;
+        if (asset?.type === 'video') {
+          const ffmpegPath = this.options.ffmpegPath ?? process.env.FFMPEG_PATH;
+          const ffprobePath = process.env.FFPROBE_PATH ?? (ffmpegPath && dirname(ffmpegPath) !== '.' ? join(dirname(ffmpegPath), process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe') : undefined);
+          const info = await probeMedia(asset.path, ffprobePath);
+          if (!info.hasVideo) throw new CanvasCutError(ERROR_CODES.RENDER_FAILED, `Could not probe video ${asset.path}; configure a working ffprobe before export`);
+          if (info.hasAudio) audioPaths.add(asset.path);
+        }
+      }
+    }
+    const ffmpegArgs = buildFfmpegArgs(plan, audioPaths);
     await runFfmpeg(this.options.ffmpegPath ?? process.env.FFMPEG_PATH ?? 'ffmpeg', ffmpegArgs, {
       cwd: this.store.paths.root,
+      signal: this.controllers.get(job.id)?.signal,
       timeoutMs: 30 * 60 * 1000
     });
 

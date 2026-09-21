@@ -294,6 +294,7 @@ export async function buildCanvasRenderPlan(
       type: node.type,
       cacheKey,
       cacheHit,
+      force: shouldForce,
       providerJobType: providerGenerationType(node)
     });
   }
@@ -309,6 +310,7 @@ export async function buildCanvasRenderPlan(
 }
 
 export interface GenerationExecutor {
+  onNodeResult?(node: CanvasNode, asset: AssetRef): void;
   execute(
     node: CanvasNode,
     request:
@@ -366,7 +368,7 @@ export async function executeCanvasPlan(
 
     const cacheKey = nodeCacheKey(node, inputs, settings);
     const planStep = plan.childJobs.find((step) => step.nodeId === node.id);
-    const cached = planStep?.cacheHit && cache ? await cache.get(cacheKey) : undefined;
+    const cached = !planStep?.force && cache ? await cache.get(cacheKey) : undefined;
     let asset: AssetRef;
     if (cached) {
       asset = cached;
@@ -378,6 +380,7 @@ export async function executeCanvasPlan(
       }
     }
     results[node.id] = asset;
+    executor.onNodeResult?.(node, asset);
   }
 
   const outputNode = graph.nodes.find((node) => node.type === 'output');

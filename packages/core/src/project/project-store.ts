@@ -13,6 +13,7 @@ import {
 } from '../types';
 import { atomicWriteJson, readJsonFile } from '../fs/atomic';
 import { CanvasCutError, ERROR_CODES } from '../errors';
+import { probeMedia } from '../ffmpeg/ffmpeg';
 
 export interface ProjectPaths {
   root: string;
@@ -184,7 +185,17 @@ export class ProjectStore {
       await atomicWriteJson(this.paths.timelineJson, timeline);
       return timeline;
     }
-    return readJsonFile<TimelineFile>(this.paths.timelineJson);
+    const timeline = await readJsonFile<TimelineFile>(this.paths.timelineJson);
+    for (const track of timeline.tracks) {
+      for (const clip of track.clips) {
+        if (clip.kind !== 'canvas') continue;
+        try {
+          const canvas = await this.readCanvas(clip.canvasId);
+          if (canvas.graphHash !== clip.canvasGraphHash) clip.status = 'stale';
+        } catch { clip.status = 'failed'; }
+      }
+    }
+    return timeline;
   }
 
   async writeTimeline(timeline: TimelineFile): Promise<void> {
@@ -222,6 +233,10 @@ export class ProjectStore {
     const path = this.canvasPath(canvasId);
     if (!(await pathExists(path))) {
       throw new CanvasCutError(ERROR_CODES.CANVAS_NOT_FOUND, `Canvas not found: ${canvasId}`);
+    }
+    const timeline = await this.readTimeline();
+    if (timeline.tracks.some((track) => track.clips.some((clip) => clip.kind === 'canvas' && clip.canvasId === canvasId))) {
+      throw new CanvasCutError(ERROR_CODES.EDGE_INVALID, '画布正在被时间线引用，请先移除对应片段再删除画布。');
     }
     const canvasFiles = await this.listCanvasFiles();
     for (const file of canvasFiles) {
@@ -300,12 +315,30 @@ export class ProjectStore {
       await fs.writeFile(targetPath, content);
     }
 
-    return {
+    const asset: AssetRef = {
       id,
       path: targetPath,
       type: assetType,
       sizeBytes: stat.size
     };
+
+    // Probe media duration for video and audio files (best-effort)
+    if (assetType === 'video' || assetType === 'audio') {
+      try {
+        const info = await probeMedia(targetPath);
+        if (info.durationMs) {
+          asset.durationMs = info.durationMs;
+        }
+        if (info.width && info.height) {
+          asset.width = info.width;
+          asset.height = info.height;
+        }
+      } catch {
+        // ffprobe not available — duration will fall back to default (5s)
+      }
+    }
+
+    return asset;
   }
 
   async assetFromLocalPath(localPath: string): Promise<AssetRef> {

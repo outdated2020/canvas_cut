@@ -153,14 +153,14 @@ export function splitClip(timeline: TimelineFile, clipId: string, atMs: number):
     id: randomUUID(),
     startMs: start,
     durationMs: leftDuration,
-    ...(clip.kind === 'media' ? { outMs: clip.inMs + leftDuration } : {})
+    outMs: (clip.inMs ?? 0) + leftDuration * (clip.speed ?? 1)
   };
   const right: Clip = {
     ...clip,
     id: randomUUID(),
     startMs: atMs,
     durationMs: rightDuration,
-    ...(clip.kind === 'media' ? { inMs: clip.outMs - rightDuration } : {})
+    inMs: (clip.inMs ?? 0) + leftDuration * (clip.speed ?? 1)
   };
   track.clips.splice(index, 1, left, right);
   return { left, right };
@@ -174,11 +174,11 @@ export function trimClip(timeline: TimelineFile, clipId: string, inMs: number, o
   if (inMs < 0 || outMs <= inMs) {
     throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Trim range is invalid');
   }
-  const durationMs = outMs - inMs;
+  const durationMs = (outMs - inMs) / (clip.speed ?? 1);
   const updated: Clip = {
     ...clip,
     durationMs,
-    ...(clip.kind === 'media' ? { inMs, outMs } : {})
+    inMs, outMs
   };
   track.clips[index] = updated;
   return updated;
@@ -217,7 +217,10 @@ export function setClipOpacity(timeline: TimelineFile, clipId: string, opacity: 
 export function setClipSpeed(timeline: TimelineFile, clipId: string, speed: number): Clip {
   const { track, clip, index } = findClip(timeline, clipId);
   if (clip.kind === 'media' || clip.kind === 'canvas') {
-    const updated = { ...clip, speed: Math.max(0.1, speed) };
+    if (!Number.isFinite(speed) || speed < 0.1 || speed > 16) {
+      throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Speed must be between 0.1 and 16');
+    }
+    const updated = { ...clip, speed, durationMs: clip.durationMs * (clip.speed ?? 1) / speed };
     track.clips[index] = updated;
     return updated;
   }

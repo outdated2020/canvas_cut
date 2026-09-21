@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import { join } from 'node:path';
 import { promises as fs } from 'node:fs';
 import {
@@ -13,6 +13,16 @@ import {
   createNode,
   disconnectEdge,
   moveClip,
+  removeClip,
+  removeTrack,
+  splitClip,
+  trimClip,
+  setClipTransform,
+  setClipOpacity,
+  setClipSpeed,
+  setClipVolume,
+  addTransition,
+  removeTransition,
   ProjectStore,
   addNode,
   removeNode,
@@ -24,12 +34,14 @@ import {
 import { randomUUID } from 'node:crypto';
 import { DaemonService } from './daemon';
 import { LocalIpcServer } from './ipc-server';
-import { runAgentMessage } from '@canvas-cut/agent';
+import type { AgentSessionService } from '@canvas-cut/agent';
+import { createAgentService } from './agent-service';
 import { captureWindowScreenshot, UiScreenshotResult } from './ui-capture';
 
 let mainWindow: BrowserWindow | null = null;
 let daemon: DaemonService;
 let ipcServer: LocalIpcServer;
+let agentService: AgentSessionService;
 
 function inferAssetType(name: string): 'image' | 'video' | 'audio' {
   const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
@@ -43,71 +55,36 @@ function localRuntimeSettingsPath(): string {
 }
 
 async function readLocalRuntimeSettings(): Promise<Record<string, unknown>> {
+  let data: Record<string, unknown>;
   try {
     const content = await fs.readFile(localRuntimeSettingsPath(), 'utf8');
-    return JSON.parse(content.replace(/^\uFEFF/, '')) as Record<string, unknown>;
-  } catch {
-    return {};
+    data = JSON.parse(content.replace(/^\uFEFF/, '')) as Record<string, unknown>;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw error;
   }
+  let migrate = false;
+  for (const key of SECRET_SETTINGS) {
+    const value = data[key];
+    if (typeof value === 'string' && value.startsWith('encrypted:v1:')) {
+      data[key] = safeStorage.decryptString(Buffer.from(value.slice('encrypted:v1:'.length), 'base64'));
+    } else if (typeof value === 'string' && value) migrate = true;
+  }
+  if (migrate && safeStorage.isEncryptionAvailable()) await writeLocalRuntimeSettings(data);
+  return data;
 }
+
+const SECRET_SETTINGS = ['arkApiKey', 'agentApiKey', 'tosAccessKeyId', 'tosAccessKeySecret'];
 
 async function writeLocalRuntimeSettings(data: Record<string, unknown>): Promise<void> {
-  await atomicWriteJson(localRuntimeSettingsPath(), data, { pretty: true });
-}
-
-async function handleAgentChat(
-  projectPath: string,
-  message: string,
-  history: Array<{ role: 'user' | 'assistant'; content: string }>,
-  daemon: DaemonService
-): Promise<{ text: string }> {
-  const store = new ProjectStore(projectPath);
-  await store.requireOpen();
-  const local = await readLocalRuntimeSettings();
-  const apiKey = String(local.agentApiKey ?? '');
-  if (!apiKey) {
-    throw new Error('Agent API key is not configured. Open Settings and set Agent API Key.');
+  const stored = { ...data };
+  for (const key of SECRET_SETTINGS) {
+    const value = stored[key];
+    if (typeof value !== 'string' || !value) continue;
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('System credential encryption is unavailable');
+    stored[key] = 'encrypted:v1:' + safeStorage.encryptString(value).toString('base64');
   }
-  const text = await runAgentMessage(message, history, {
-    apiKey,
-    baseUrl: String(local.agentBaseUrl ?? 'https://api.openai.com/v1'),
-    model: String(local.agentModel ?? 'gpt-4o-mini'),
-    callbacks: {
-      createCanvas: async (prompt, name) => {
-        return withProjectLock(store.paths.root, async () => {
-          const canvas = createCanvas(randomUUID(), name);
-          const inputNode = addNode(canvas, 'text-input', { text: prompt });
-          const genNode = addNode(canvas, 'text-to-video', { durationMs: 5000 });
-          const outputNode = addNode(canvas, 'output', {});
-          connectEdge(canvas, inputNode.id, 'text', genNode.id, 'text');
-          connectEdge(canvas, genNode.id, 'video', outputNode.id, 'video');
-          await store.writeCanvas(canvas);
-          return { canvasId: canvas.id };
-        });
-      },
-      renderCanvas: async (canvasId) => {
-        return daemon.submitJob(store.paths.root, {
-          type: 'canvas.render',
-          canvasId,
-          force: false
-        });
-      },
-      addCanvasToTimeline: async (canvasId, durationMs) => {
-        return withProjectLock(store.paths.root, async () => {
-          const timeline = await store.readTimeline();
-          let track = timeline.tracks.find((item) => item.type === 'video');
-          if (!track) {
-            track = addTrack(timeline, 'video', 'V1');
-          }
-          const canvas = await store.readCanvas(canvasId);
-          const clip = addCanvasClip(track, canvas, 0, durationMs);
-          await store.writeTimeline(timeline);
-          return { clipId: clip.id };
-        });
-      }
-    }
-  });
-  return { text };
+  await atomicWriteJson(localRuntimeSettingsPath(), stored, { pretty: true });
 }
 
 function createWindow(): BrowserWindow {
@@ -125,6 +102,12 @@ function createWindow(): BrowserWindow {
       webSecurity: !process.env.VITE_DEV_SERVER_URL
     }
   });
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url).catch((error) => console.error('Unable to open link', error));
+    return { action: 'deny' };
+  });
+  window.once('ready-to-show', () => window.show());
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
   if (devUrl) {
@@ -185,6 +168,24 @@ function registerIpcHandlers(): void {
           await store.writeCanvas(canvas);
           return canvas;
         });
+      case 'canvas.remove': {
+        const canvasId = String(payload.canvasId);
+        const options: Electron.MessageBoxOptions = {
+          type: 'warning', title: '删除画布', message: '确定删除这个画布？',
+          detail: '此操作无法撤销。已生成的素材文件会保留。',
+          buttons: ['取消', '删除画布'], defaultId: 0, cancelId: 0, noLink: true
+        };
+        const answer = mainWindow ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options);
+        if (answer.response !== 1) return { removed: false };
+        const context = await daemon.getContext(String(payload.path));
+        return withLockedProject(String(payload.path), async (store) => {
+          if (context.jobStore.list().some((job) => job.canvas_id === canvasId && ['pending', 'running'].includes(job.status))) {
+            throw new Error('画布仍有生成任务正在运行，请先停止任务再删除。');
+          }
+          await store.removeCanvas(canvasId);
+          return { removed: true };
+        });
+      }
       case 'canvas.get': {
         const store = new ProjectStore(String(payload.path));
         await store.requireOpen();
@@ -320,6 +321,24 @@ function registerIpcHandlers(): void {
         await store.requireOpen();
         return store.readTimeline();
       }
+      case 'timeline.refresh-canvases':
+        return withLockedProject(String(payload.path), async (store) => {
+          const timeline = await store.readTimeline();
+          for (const track of timeline.tracks) {
+            for (const clip of track.clips) {
+              if (clip.kind !== 'canvas') continue;
+              const canvas = await store.readCanvas(clip.canvasId);
+              const asset = canvas.nodes.find((node) => node.type === 'output' && node.status === 'succeeded')?.cachedResult;
+              if (!asset) throw new Error(`Render canvas ${canvas.id} before updating clips`);
+              clip.canvasGraphHash = canvas.graphHash;
+              clip.canvasVersion = canvas.version;
+              clip.renderedAsset = asset;
+              clip.status = 'fresh';
+            }
+          }
+          await store.writeTimeline(timeline);
+          return timeline;
+        });
       case 'timeline.add-track':
         return withLockedProject(String(payload.path), async (store) => {
           await store.requireOpen();
@@ -340,7 +359,8 @@ function registerIpcHandlers(): void {
               track,
               canvas,
               Number(payload.startMs ?? 0),
-              Number(payload.durationMs ?? 5000)
+              Number(payload.durationMs ?? 5000),
+              canvas.nodes.find((node) => node.type === 'output' && node.status === 'succeeded')?.cachedResult
             );
             await store.writeTimeline(timeline);
             return clip;
@@ -373,11 +393,83 @@ function registerIpcHandlers(): void {
           await store.writeTimeline(timeline);
           return clip;
         });
+      case 'timeline.remove-clip':
+        return withLockedProject(String(payload.path), async (store) => {
+          await store.requireOpen();
+          const timeline = await store.readTimeline();
+          removeClip(timeline, String(payload.clipId));
+          await store.writeTimeline(timeline);
+          return { ok: true };
+        });
+      case 'timeline.remove-track':
+        return withLockedProject(String(payload.path), async (store) => {
+          await store.requireOpen();
+          const timeline = await store.readTimeline();
+          removeTrack(timeline, String(payload.trackId));
+          await store.writeTimeline(timeline);
+          return { ok: true };
+        });
+      case 'timeline.split-clip':
+        return withLockedProject(String(payload.path), async (store) => {
+          await store.requireOpen();
+          const timeline = await store.readTimeline();
+          const result = splitClip(timeline, String(payload.clipId), Number(payload.atMs ?? 0));
+          await store.writeTimeline(timeline);
+          return result;
+        });
+      case 'timeline.trim-clip':
+        return withLockedProject(String(payload.path), async (store) => {
+          await store.requireOpen();
+          const timeline = await store.readTimeline();
+          let clip = trimClip(timeline, String(payload.clipId), Number(payload.inMs ?? 0), Number(payload.outMs ?? 0));
+          if (payload.startMs !== undefined) clip = moveClip(timeline, clip.id, Number(payload.startMs));
+          await store.writeTimeline(timeline);
+          return clip;
+        });
+      case 'timeline.set-clip-param':
+        return withLockedProject(String(payload.path), async (store) => {
+          await store.requireOpen();
+          const timeline = await store.readTimeline();
+          const clipId = String(payload.clipId);
+          const param = String(payload.param);
+          const value = payload.value;
+          let clip;
+          if (param === 'transform') {
+            clip = setClipTransform(timeline, clipId, value as any);
+          } else if (param === 'opacity') {
+            clip = setClipOpacity(timeline, clipId, Number(value));
+          } else if (param === 'speed') {
+            clip = setClipSpeed(timeline, clipId, Number(value));
+          } else if (param === 'volume') {
+            clip = setClipVolume(timeline, clipId, Number(value));
+          } else {
+            throw new Error(`Unknown clip param: ${param}`);
+          }
+          await store.writeTimeline(timeline);
+          return clip;
+        });
+      case 'timeline.add-transition':
+        return withLockedProject(String(payload.path), async (store) => {
+          await store.requireOpen();
+          const timeline = await store.readTimeline();
+          const clip = addTransition(timeline, String(payload.clipId), String(payload.transitionType ?? 'crossfade') as any, Number(payload.durationMs ?? 500));
+          await store.writeTimeline(timeline);
+          return clip;
+        });
+      case 'timeline.remove-transition':
+        return withLockedProject(String(payload.path), async (store) => {
+          await store.requireOpen();
+          const timeline = await store.readTimeline();
+          const clip = removeTransition(timeline, String(payload.clipId));
+          await store.writeTimeline(timeline);
+          return clip;
+        });
       case 'timeline.export':
         logger.info('timeline.export requested');
         return daemon.submitJob(String(payload.path), {
           type: 'timeline.export',
-          outputPath: payload.outputPath
+          outputPath: payload.outputPath,
+          width: payload.width, height: payload.height, fps: payload.fps, crf: payload.crf
         });
       case 'job.submit':
         logger.info('job.submit requested: type=' + payload.type);
@@ -393,17 +485,16 @@ function registerIpcHandlers(): void {
         return daemon.listJobs(String(payload.path), typeof payload.status === 'string' ? payload.status : undefined);
       case 'job.clear':
         return daemon.clearJobs(String(payload.path), typeof payload.status === 'string' ? payload.status : undefined);
-      case 'agent.chat': {
-        const history = Array.isArray(payload.history)
-          ? (payload.history as Array<{ role: 'user' | 'assistant'; content: string }>)
-          : [];
-        return handleAgentChat(
-          String(payload.path),
-          String(payload.message ?? ''),
-          history,
-          daemon
-        );
-      }
+      case 'agent.start':
+        return agentService.start(String(payload.path), String(payload.message ?? ''), String(payload.conversationId ?? 'default'));
+      case 'agent.get-run':
+        return agentService.getRun(String(payload.path), String(payload.conversationId ?? 'default'), Number(payload.after ?? 0));
+      case 'agent.cancel':
+        return agentService.cancel(String(payload.path), String(payload.conversationId ?? 'default'));
+      case 'agent.history':
+        return agentService.history(String(payload.path), String(payload.conversationId ?? 'default'));
+      case 'agent.chat':
+        return agentService.chat(String(payload.path), String(payload.message ?? ''), String(payload.conversationId ?? 'default'));
       case 'settings.get-runtime': {
         const store = new ProjectStore(String(payload.path));
         await store.requireOpen();
@@ -411,6 +502,9 @@ function registerIpcHandlers(): void {
         const local = await readLocalRuntimeSettings();
         return {
           arkApiKey: String(local.arkApiKey ?? process.env.ARK_API_KEY ?? ''),
+          arkBaseUrl: config.provider.volcengine.baseUrl,
+          arkImageModel: config.provider.volcengine.imageModel,
+          arkVideoModel: config.provider.volcengine.videoModel,
           tosAccessKeyId: String(local.tosAccessKeyId ?? process.env.TOS_ACCESS_KEY_ID ?? ''),
           tosAccessKeySecret: String(local.tosAccessKeySecret ?? process.env.TOS_ACCESS_KEY_SECRET ?? ''),
           tosBucket: config.tos.bucket,
@@ -424,6 +518,18 @@ function registerIpcHandlers(): void {
       }
       case 'settings.set-runtime':
         return withLockedProject(String(payload.path), async (store) => {
+          const config = await store.readConfig();
+          for (const [field, key] of [['arkBaseUrl', 'baseUrl'], ['arkImageModel', 'imageModel'], ['arkVideoModel', 'videoModel']] as const) {
+            if (payload[field] === undefined) continue;
+            const value = typeof payload[field] === 'string' ? payload[field].trim() : '';
+            if (!value) throw new Error(`${field} 不能为空`);
+            if (field === 'arkBaseUrl') {
+              let url: URL;
+              try { url = new URL(value); } catch { throw new Error('ARK Base URL 必须是完整的 HTTP/HTTPS 地址'); }
+              if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('ARK Base URL 必须是不含凭证的 HTTP/HTTPS 地址');
+            }
+            config.provider.volcengine[key] = value;
+          }
           if (typeof payload.arkApiKey === 'string' && payload.arkApiKey) {
             process.env.ARK_API_KEY = payload.arkApiKey;
           }
@@ -437,7 +543,6 @@ function registerIpcHandlers(): void {
             process.env.FFMPEG_PATH = payload.ffmpegPath;
           }
 
-          const config = await store.readConfig();
           if (typeof payload.tosBucket === 'string' && payload.tosBucket) {
             config.tos.bucket = payload.tosBucket;
           }
@@ -497,6 +602,7 @@ if (!gotLock) {
   app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
       mainWindow.focus();
     }
   });
@@ -529,19 +635,23 @@ if (!gotLock) {
     }
     logger.info('Starting DaemonService...');
     daemon = new DaemonService();
+    agentService = await createAgentService({ userDataDir: app.getPath('userData'), appRoot: app.getAppPath(), executable: process.execPath, settings: readLocalRuntimeSettings });
     logger.info('Starting IPC server...');
     ipcServer = new LocalIpcServer(
-      { userDataDir: app.getPath('userData'), captureUi: captureMainWindow },
+      { userDataDir: app.getPath('userData'), captureUi: captureMainWindow,
+        agentRequest: async (method, projectPath, payload) => {
+          const conversation = typeof payload.conversationId === 'string' ? payload.conversationId : 'default';
+          switch (method) {
+            case 'agent.start': return agentService.start(projectPath, String(payload.message ?? ''), conversation);
+            case 'agent.get-run': return agentService.getRun(projectPath, conversation, Number(payload.after ?? 0));
+            case 'agent.history': return agentService.history(projectPath, conversation);
+            case 'agent.cancel': return agentService.cancel(projectPath, conversation);
+            default: throw new Error('Unknown Agent operation');
+          }
+        }
+      },
       daemon,
-      async (projectPath, payload) =>
-        handleAgentChat(
-          projectPath,
-          String(payload.message ?? ''),
-          Array.isArray(payload.history)
-            ? (payload.history as Array<{ role: 'user' | 'assistant'; content: string }>)
-            : [],
-          daemon
-        )
+      async (projectPath, payload) => agentService.chat(projectPath, String(payload.message ?? ''), String(payload.conversationId ?? 'default'))
     );
     await ipcServer.start();
     logger.info('IPC server started on ' + ipcServer.endpoint);
@@ -556,10 +666,20 @@ if (!gotLock) {
     }
   });
 
-  app.on('before-quit', () => {
+  let shutdownComplete = false;
+  let shuttingDown = false;
+  app.on('before-quit', (event) => {
+    if (shutdownComplete) return;
+    event.preventDefault();
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void (async () => {
+      await agentService?.shutdown();
     logger.info('App quitting...');
-    void ipcServer?.stop();
-    void daemon?.shutdown();
+      await ipcServer?.stop();
+      await daemon?.shutdown();
+      shutdownComplete = true; app.quit();
+    })().catch((error) => { logger.error(String(error)); shutdownComplete = true; app.quit(); });
   });
 
   app.on('window-all-closed', () => {

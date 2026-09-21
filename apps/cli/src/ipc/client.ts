@@ -39,7 +39,7 @@ export function uiScreenshotFile(): string {
 }
 
 export class LocalIpcClient {
-  constructor(private readonly projectPath?: string) {}
+  constructor(private readonly projectPath?: string, private readonly idempotencyKey?: string) {}
 
   async request<T>(method: string, payload: unknown = {}, timeoutMs = 30_000): Promise<T> {
     const info = await this.readInstance();
@@ -53,7 +53,7 @@ export class LocalIpcClient {
       requestId,
       method,
       projectPath: this.projectPath,
-      idempotencyKey: randomUUID(),
+      idempotencyKey: this.idempotencyKey ?? randomUUID(),
       token: info.token,
       payload,
       sentAt: Date.now()
@@ -61,6 +61,7 @@ export class LocalIpcClient {
 
     return new Promise<T>((resolvePromise, reject) => {
       const socket = createConnection(info.endpoint);
+      socket.setEncoding('utf8');
       let buffer = '';
       let settled = false;
       const timer = setTimeout(() => {
@@ -86,8 +87,8 @@ export class LocalIpcClient {
       socket.on('connect', () => {
         socket.write(`${JSON.stringify(request)}\n`);
       });
-      socket.on('data', (chunk: Buffer) => {
-        buffer += chunk.toString('utf8');
+      socket.on('data', (chunk: string) => {
+        buffer += chunk;
         const newline = buffer.indexOf('\n');
         if (newline >= 0) {
           const line = buffer.slice(0, newline);
@@ -136,7 +137,8 @@ export class LocalIpcClient {
       const info = JSON.parse(content) as InstanceInfo;
       if (info.protocolVersion !== 1) return null;
       if (!this.isPidAlive(info.pid)) return null;
-      if (Date.now() - info.startedAt > 24 * 60 * 60 * 1000) return null;
+      // A live desktop instance remains valid until it exits, regardless of uptime.
+      // Stale instances are rejected by the PID check and authenticated IPC connection.
       return info;
     } catch {
       return null;

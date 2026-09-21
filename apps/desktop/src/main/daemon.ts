@@ -1,7 +1,9 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { resolve } from 'node:path';
 import { logger } from '@canvas-cut/core';
 import {
   buildCanvasRenderPlan,
+  canonicalJson,
   CanvasCutError,
   ERROR_CODES,
   JobRecord,
@@ -25,12 +27,23 @@ export interface SubmitResult {
 
 export class DaemonService {
   private readonly contexts = new Map<string, ProjectContext>();
+  private readonly openingContexts = new Map<string, Promise<ProjectContext>>();
+  private readonly submissions = new Map<string, Promise<unknown>>();
 
   async getContext(projectPath: string): Promise<ProjectContext> {
-    const normalized = projectPath.toLowerCase();
+    const absolute = resolve(projectPath);
+    const normalized = process.platform === 'win32' ? absolute.toLowerCase() : absolute;
     const existing = this.contexts.get(normalized);
     if (existing) return existing;
+    const opening = this.openingContexts.get(normalized);
+    if (opening) return opening;
+    const pending = this.openContext(absolute, normalized);
+    this.openingContexts.set(normalized, pending);
+    try { return await pending; }
+    finally { this.openingContexts.delete(normalized); }
+  }
 
+  private async openContext(projectPath: string, normalized: string): Promise<ProjectContext> {
     const store = new ProjectStore(projectPath);
     await store.requireOpen();
     const jobStore = this.createJobStore(store);
@@ -59,23 +72,42 @@ export class DaemonService {
     }
   }
 
-  async submitJob(
+  async submitJob(projectPath: string, payload: Record<string, unknown>, idempotencyKey?: string): Promise<SubmitResult> {
+    const absolute = resolve(projectPath);
+    const key = process.platform === 'win32' ? absolute.toLowerCase() : absolute;
+    const previous = this.submissions.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.submitJobSerial(projectPath, payload, idempotencyKey));
+    this.submissions.set(key, next);
+    try { return await next; }
+    finally { if (this.submissions.get(key) === next) this.submissions.delete(key); }
+  }
+
+  private async submitJobSerial(
     projectPath: string,
     payload: Record<string, unknown>,
-    _idempotencyKey?: string
+    idempotencyKey?: string
   ): Promise<SubmitResult> {
     const context = await this.getContext(projectPath);
     const type = String(payload.type ?? '');
     logger.info('Daemon submitJob: type=' + type + (payload.canvasId ? ' canvasId=' + payload.canvasId : ''));
     const now = Date.now();
+    const submittedId = idempotencyKey ? createHash('sha256').update(idempotencyKey).digest('hex') : randomUUID();
+    const submissionHash = createHash('sha256').update(canonicalJson(payload)).digest('hex');
+    const existingSubmission = context.jobStore.get(submittedId);
+    if (existingSubmission) {
+      if (JSON.parse(existingSubmission.request_snapshot ?? '{}')._submissionHash !== submissionHash) {
+        throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Idempotency key was already used for a different request');
+      }
+      return { jobId: submittedId, type: existingSubmission.type, childJobIds: context.jobStore.list({ parentId: submittedId }).map((job) => job.id) };
+    }
 
     if (type.startsWith('generate.')) {
-      const jobId = randomUUID();
+      const jobId = submittedId;
       context.jobStore.insert({
         id: jobId,
         type,
         status: 'pending',
-        request_snapshot: JSON.stringify(payload.request ?? {}),
+        request_snapshot: JSON.stringify({ ...(payload.request as Record<string, unknown> ?? {}), _submissionHash: submissionHash }),
         created_at: now,
         updated_at: now
       });
@@ -97,14 +129,14 @@ export class DaemonService {
           return { jobId: existingId, type };
         }
       }
-      const parentId = randomUUID();
+      const parentId = submittedId;
       logger.info('Daemon canvas.render: parentId=' + parentId + ' childJobs=' + plan.childJobs.length);
 
       context.jobStore.insert({
         id: parentId,
         type: 'canvas.render',
         status: 'pending',
-        request_snapshot: JSON.stringify({ canvasId, force, nodeId }),
+        request_snapshot: JSON.stringify({ canvasId, force, nodeId, _submissionHash: submissionHash }),
         canvas_id: canvasId,
         created_at: now,
         updated_at: now
@@ -133,12 +165,12 @@ export class DaemonService {
     }
 
     if (type === 'timeline.export') {
-      const jobId = randomUUID();
+      const jobId = submittedId;
       context.jobStore.insert({
         id: jobId,
         type: 'timeline.export',
         status: 'pending',
-        request_snapshot: JSON.stringify({ outputPath: payload.outputPath }),
+        request_snapshot: JSON.stringify({ outputPath: payload.outputPath, width: payload.width, height: payload.height, fps: payload.fps, crf: payload.crf, _submissionHash: submissionHash }),
         created_at: now,
         updated_at: now
       });
@@ -181,11 +213,14 @@ export class DaemonService {
     if (!job) {
       throw new CanvasCutError(ERROR_CODES.JOB_NOT_FOUND, `Job not found: ${jobId}`);
     }
+    if (['succeeded', 'failed', 'cancelled'].includes(job.status)) return { cancelled: job.status === 'cancelled' };
     context.jobStore.update(jobId, { status: 'cancelled', updated_at: Date.now() });
     const children = context.jobStore.list({ parentId: jobId });
     for (const child of children) {
+      if (child.status === 'succeeded' || child.status === 'failed') continue;
       context.jobStore.update(child.id, { status: 'cancelled', updated_at: Date.now() });
     }
+    await context.worker.cancel(jobId);
     return { cancelled: true };
   }
 

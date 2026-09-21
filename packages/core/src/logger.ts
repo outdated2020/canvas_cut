@@ -41,6 +41,8 @@ export class Logger {
   private readonly minLevel: number;
   private readonly listeners: Array<(entry: LogEntry) => void> = [];
   private logFile: string | undefined;
+  private consoleStderr = false;
+  setConsoleStderr(value: boolean): void { this.consoleStderr = value; }
 
   constructor(options: LoggerOptions = {}) {
     this.maxBuffer = options.bufferSize ?? 500;
@@ -52,7 +54,7 @@ export class Logger {
     this.listeners.push((entry: LogEntry) => {
       const ts = new Date(entry.timestamp).toISOString().slice(0, 23).replace('T', ' ');
       const fn =
-        entry.level === 'error'
+        this.consoleStderr || entry.level === 'error'
           ? console.error
           : entry.level === 'warn'
             ? console.warn

@@ -1,7 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useMemo, useState } from 'react';
+import { usePlayer } from './usePlayer';
+import { useAgentChat } from './useAgentChat';
+import { ChatMarkdown } from './ChatMarkdown';
+import { AgentActivity } from './AgentActivity';
+import { ContextUsageRing } from './ContextUsageRing';
+import { Player } from './Player';
 import { CanvasGraphView } from './CanvasGraphView';
 import { TimelineView } from './TimelineView';
 import { Icon } from './icons';
+import type { TimelineFile, Track, Clip } from '@canvas-cut/core';
 
 declare global {
   interface Window {
@@ -29,13 +36,15 @@ function fileUrl(path: string): string {
   return 'file:///' + path.replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
-function formatTimelineTime(ms: number): string {
+function formatTimelineTime(ms: number, fps: number): string {
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
+  const frameMs = 1000 / fps;
+  const frames = Math.floor((ms % 1000) / frameMs);
   const pad = (value: number) => String(value).padStart(2, '0');
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}:${pad(frames)}`;
 }
 
 export function App() {
@@ -43,7 +52,7 @@ export function App() {
   const [projectName, setProjectName] = useState('Demo Project');
   const [project, setProject] = useState<AnyRecord | null>(null);
   const [config, setConfig] = useState<AnyRecord | null>(null);
-  const [timeline, setTimeline] = useState<AnyRecord | null>(null);
+  const [timeline, setTimeline] = useState<TimelineFile | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [canvases, setCanvases] = useState<AnyRecord[]>([]);
   const [assets, setAssets] = useState<AnyRecord[]>([]);
@@ -60,10 +69,13 @@ export function App() {
   }
   const [newNodeType, setNewNodeType] = useState('text-to-video');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsError, setSettingsError] = useState('');
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const [aiView, setAiView] = useState<AiView>('templates');
   const [centerTab, setCenterTab] = useState<CenterTab>('assets');
   const [assetTab, setAssetTab] = useState<AssetTab>('my-assets');
   const [assetSearch, setAssetSearch] = useState('');
+  const [selectedAssetPath, setSelectedAssetPath] = useState<string | null>(null);
   const [assetView, setAssetView] = useState<'grid' | 'list'>('grid');
   const [sortActive, setSortActive] = useState(false);
   const [filterActive, setFilterActive] = useState(false);
@@ -71,17 +83,25 @@ export function App() {
   const [projectOpen, setProjectOpen] = useState(false);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [snapOn, setSnapOn] = useState(true);
-  const [playing, setPlaying] = useState(false);
   const [zoom, setZoom] = useState(50);
-  const [playheadMs, setPlayheadMs] = useState(0);
-  const [timelineDurationMs, setTimelineDurationMs] = useState(0);
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [razorMode, setRazorMode] = useState(false);
+  const [canvasExpanded, setCanvasExpanded] = useState(false);
+  const [draggingAsset, setDraggingAsset] = useState<AnyRecord | null>(null);
+  const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
   const [chatInput, setChatInput] = useState('');
-  const [chatMessages, setChatMessages] = useState<AnyRecord[]>([]);
+  const agentChat = useAgentChat(projectPath, async () => { await Promise.all([refreshSidebar(), refreshTimeline(), refreshCanvas().catch(() => setCanvas(null))]); }, () => setAiView('chat'));
+  const { messages: chatMessages, setMessages: setChatMessages } = agentChat;
   const [canvas, setCanvas] = useState<AnyRecord | null>(null);
+  const [deletingCanvas, setDeletingCanvas] = useState<string | null>(null);
+  const [canvasDeleteError, setCanvasDeleteError] = useState('');
   const [centerColWidth, setCenterColWidth] = useState(42); // percentage of workspace width
   const [isDraggingResizer, setIsDraggingResizer] = useState(false);
   const [runtimeSettings, setRuntimeSettings] = useState({
     arkApiKey: '',
+    arkBaseUrl: '',
+    arkImageModel: '',
+    arkVideoModel: '',
     tosAccessKeyId: '',
     tosAccessKeySecret: '',
     tosBucket: '',
@@ -320,6 +340,23 @@ export function App() {
     setCenterTab('canvas');
   }
 
+  async function deleteCanvas(canvasId: string) {
+    if (deletingCanvas) return;
+    setDeletingCanvas(canvasId);
+    setCanvasDeleteError('');
+    try {
+      const result = await invoke('canvas.remove', { path: projectPath, canvasId }) as AnyRecord;
+      if (!result.removed) return;
+      setCanvas((current) => current?.id === canvasId ? null : current);
+      await refreshSidebar();
+      addLog('画布已删除');
+    } catch (error) {
+      setCanvasDeleteError(String(error));
+    } finally {
+      setDeletingCanvas(null);
+    }
+  }
+
     async function renderCanvas(force = false) {
     if (!canvas) return;
     try {
@@ -433,7 +470,7 @@ export function App() {
   }
 
   async function addTrack(type: 'video' | 'audio' | 'subtitle') {
-    const name = type === 'video' ? `V${(timeline?.tracks?.filter((t: AnyRecord) => t.type === 'video').length ?? 0) + 1}` : type === 'audio' ? `A${(timeline?.tracks?.filter((t: AnyRecord) => t.type === 'audio').length ?? 0) + 1}` : `S${(timeline?.tracks?.filter((t: AnyRecord) => t.type === 'subtitle').length ?? 0) + 1}`;
+    const name = type === 'video' ? `V${(timeline?.tracks?.filter((t: Track) => t.type === 'video').length ?? 0) + 1}` : type === 'audio' ? `A${(timeline?.tracks?.filter((t: Track) => t.type === 'audio').length ?? 0) + 1}` : `S${(timeline?.tracks?.filter((t: Track) => t.type === 'subtitle').length ?? 0) + 1}`;
     await invoke('timeline.add-track', { path: projectPath, type, name });
     await refreshTimeline();
   }
@@ -445,13 +482,89 @@ export function App() {
       addLog('Add a video track first');
       return;
     }
+    const outputNode = canvas.nodes?.find((n: AnyRecord) => n.type === 'output');
+    const cachedResult = outputNode?.cachedResult;
+    let durationMs = 5000;
+    if (cachedResult?.durationMs) {
+      durationMs = cachedResult.durationMs;
+    }
+    if (!cachedResult) {
+      const ok = window.confirm('画布尚未渲染，是否先渲染再加入时间线？');
+      if (!ok) return;
+      try {
+        const renderResult = (await invoke('canvas.render', {
+          path: projectPath,
+          canvasId: canvas.id,
+          force: false
+        })) as AnyRecord;
+        setJobId(renderResult.jobId);
+        addLog(`Canvas rendering: ${renderResult.jobId}`);
+        setTasksOpen(true);
+        await new Promise<void>((resolve) => {
+          const checkInterval = setInterval(async () => {
+            try {
+              const status = (await invoke('job.status', {
+                path: projectPath,
+                jobId: renderResult.jobId
+              })) as AnyRecord;
+              if (['succeeded', 'failed', 'cancelled'].includes(status.status)) {
+                clearInterval(checkInterval);
+                resolve();
+              }
+            } catch {
+              clearInterval(checkInterval);
+              resolve();
+            }
+          }, 2000);
+        });
+        const updatedCanvas = (await invoke('canvas.get', {
+          path: projectPath,
+          canvasId: canvas.id
+        })) as AnyRecord;
+        setCanvas(updatedCanvas);
+        const updatedOutput = updatedCanvas.nodes?.find((n: AnyRecord) => n.type === 'output');
+        if (!updatedOutput?.cachedResult || updatedOutput.status !== 'succeeded') throw new Error('Canvas did not render successfully');
+        if (updatedOutput?.cachedResult?.durationMs) {
+          durationMs = updatedOutput.cachedResult.durationMs;
+        }
+      } catch (error) {
+        addLog(`Canvas render failed: ${String(error)}`);
+        return;
+      }
+    }
     await invoke('timeline.add-clip', {
       path: projectPath,
       trackId,
       kind: 'canvas',
       canvasId: canvas.id,
       startMs: 0,
-      durationMs: 5000
+      durationMs
+    });
+    await refreshTimeline();
+  }
+
+  async function addAssetToTimeline(asset: AnyRecord, startMs: number = 0, targetTrackId?: string) {
+    if (!timeline) return;
+    const targetType = asset.type === 'audio' ? 'audio' : 'video';
+    let trackId = targetTrackId ?? timeline.tracks?.find((t: Track) => t.type === targetType)?.id;
+    if (targetTrackId) {
+      const target = timeline.tracks.find((track) => track.id === targetTrackId);
+      if (!target || (target.type !== targetType && !(target.type === 'image' && asset.type === 'image'))) {
+        addLog('The asset is incompatible with the selected track'); return;
+      }
+    }
+    if (!trackId) {
+      await addTrack(targetType);
+      const refreshed = (await invoke('timeline.get', { path: projectPath })) as TimelineFile;
+      trackId = refreshed.tracks?.find((t) => t.type === targetType)?.id;
+      if (!trackId) return;
+    }
+    await invoke('timeline.add-clip', {
+      path: projectPath,
+      trackId,
+      kind: 'media',
+      asset: asset.path,
+      startMs
     });
     await refreshTimeline();
   }
@@ -461,25 +574,67 @@ export function App() {
     await refreshTimeline();
   }
 
+  async function removeTimelineClip(clipId: string) {
+    await invoke('timeline.remove-clip', { path: projectPath, clipId });
+    setSelectedClipId(null);
+    await refreshTimeline();
+  }
+
+  async function removeTimelineTrack(trackId: string) {
+    await invoke('timeline.remove-track', { path: projectPath, trackId });
+    await refreshTimeline();
+  }
+
+  async function splitTimelineClip(clipId: string, atMs: number) {
+    await invoke('timeline.split-clip', { path: projectPath, clipId, atMs });
+    await refreshTimeline();
+  }
+
+  async function trimTimelineClip(clipId: string, inMs: number, outMs: number, startMs?: number) {
+    await invoke('timeline.trim-clip', { path: projectPath, clipId, inMs, outMs, startMs });
+    await refreshTimeline();
+  }
+
+  async function setClipParam(clipId: string, param: string, value: unknown) {
+    await invoke('timeline.set-clip-param', { path: projectPath, clipId, param, value });
+    await refreshTimeline();
+  }
+
+  async function addClipTransition(clipId: string, transitionType: string = 'crossfade', durationMs: number = 500) {
+    await invoke('timeline.add-transition', { path: projectPath, clipId, transitionType, durationMs });
+    await refreshTimeline();
+  }
+
+  async function removeClipTransition(clipId: string) {
+    await invoke('timeline.remove-transition', { path: projectPath, clipId });
+    await refreshTimeline();
+  }
+
   async function refreshTimeline() {
-    const result = (await invoke('timeline.get', { path: projectPath })) as AnyRecord;
+    const result = (await invoke('timeline.get', { path: projectPath })) as TimelineFile;
     setTimeline(result);
-    const duration = (result.tracks ?? []).reduce((max: number, track: AnyRecord) => {
+    const duration = (result.tracks ?? []).reduce((max: number, track: Track) => {
       return (track.clips ?? []).reduce(
-        (trackMax: number, clip: AnyRecord) => Math.max(trackMax, clip.startMs + clip.durationMs),
+        (trackMax: number, clip: Clip) => Math.max(trackMax, clip.startMs + clip.durationMs),
         max
       );
     }, 0);
-    setTimelineDurationMs(duration);
   }
+
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportWidth, setExportWidth] = useState(1920);
+  const [exportHeight, setExportHeight] = useState(1080);
+  const [exportFps, setExportFps] = useState(30);
+  const [exportCrf, setExportCrf] = useState(18);
 
   async function exportTimeline() {
     try {
       const output = `${projectPath}\\export.mp4`;
-      const result = (await invoke('timeline.export', { path: projectPath, outputPath: output })) as AnyRecord;
+      const result = (await invoke('timeline.export', { path: projectPath, outputPath: output, width: exportWidth, height: exportHeight, fps: exportFps, crf: exportCrf })) as AnyRecord;
       setJobId(result.jobId);
       addLog(`Export submitted: ${result.jobId}`);
       setTasksOpen(true);
+      setExportOpen(false);
     } catch (error) {
       addLog(String(error));
     }
@@ -505,20 +660,30 @@ export function App() {
   }
 
   async function saveRuntimeSettings() {
+    if (settingsSaving) return;
+    setSettingsError('');
+    setSettingsSaving(true);
     try {
       const result = await invoke('settings.set-runtime', { path: projectPath, ...runtimeSettings });
       addLog(`Runtime settings applied: ${JSON.stringify(result)}`);
+      const updated = await invoke('config.get', { path: projectPath }) as AnyRecord;
+      setConfig(updated);
       setSettingsOpen(false);
     } catch (error) {
+      setSettingsError(String(error));
       addLog(String(error));
+    } finally {
+      setSettingsSaving(false);
     }
   }
 
   async function openSettings() {
+    setSettingsError('');
     try {
       const saved = (await invoke('settings.get-runtime', { path: projectPath })) as AnyRecord;
       setRuntimeSettings((current) => ({ ...current, ...saved }));
     } catch (error) {
+      setSettingsError(String(error));
       addLog(String(error));
     }
     setSettingsOpen(true);
@@ -526,21 +691,9 @@ export function App() {
 
   async function sendChatMessage() {
     const text = chatInput.trim();
-    if (!text) return;
-    const history = chatMessages.map((message) => ({ role: message.role, content: message.text }));
-    setChatMessages((messages) => [...messages, { role: 'user', text }]);
-    setChatInput('');
+    if (!text || agentChat.busy) return;
     setAiView('chat');
-    try {
-      const result = (await invoke('agent.chat', {
-        path: projectPath,
-        message: text,
-        history
-      })) as AnyRecord;
-      setChatMessages((messages) => [...messages, { role: 'assistant', text: result.text }]);
-    } catch (error) {
-      setChatMessages((messages) => [...messages, { role: 'assistant', text: `Error: ${String(error)}` }]);
-    }
+    if (await agentChat.send(text)) setChatInput('');
   }
 
   useEffect(() => {
@@ -563,23 +716,66 @@ export function App() {
     return () => clearInterval(timer);
   }, [project]);
 
-  useEffect(() => {
-    if (!playing) return;
-    const timer = setInterval(() => {
-      setPlayheadMs((current) => {
-        const next = current + 100;
-        if (timelineDurationMs > 0 && next >= timelineDurationMs) {
-          setPlaying(false);
-          return timelineDurationMs;
-        }
-        return next;
-      });
-    }, 100);
-    return () => clearInterval(timer);
-  }, [playing, timelineDurationMs]);
+  const {
+    playing,
+    playheadMs,
+    speed,
+    looping,
+    duration,
+    previewAsset,
+    timelineMode,
+    videoRef,
+    audioRef,
+    toggle,
+    seek,
+    stepForward,
+    stepBack,
+    goToStart,
+    goToEnd,
+    setSpeed,
+    toggleLoop,
+  } = usePlayer({ timeline, assets, canvas, selectedAssetPath, fps: project?.settings?.fps ?? 30 });
 
-  const selectedNode = canvas?.nodes?.find((node: AnyRecord) => node.status === 'succeeded');
-  const previewAsset = selectedNode?.cachedResult ?? null;
+  useEffect(() => {
+    if (!draggingAsset) return;
+
+    function handlePointerMove(e: PointerEvent) {
+      setDragPos({ x: e.clientX, y: e.clientY });
+    }
+
+    function handlePointerUp(e: PointerEvent) {
+      const asset = draggingAsset;
+      if (!asset) { setDraggingAsset(null); return; }
+      // Check if dropped on a timeline track
+      const timelineEl = document.querySelector('.timeline-panel');
+      if (timelineEl) {
+        const trackLanes = timelineEl.querySelectorAll('.track-lane');
+        for (const lane of Array.from(trackLanes)) {
+          const rect = lane.getBoundingClientRect();
+          if (e.clientY >= rect.top && e.clientY <= rect.bottom &&
+              e.clientX >= rect.left && e.clientX <= rect.right) {
+            const trackId = lane.getAttribute('data-track-id');
+            if (trackId) {
+              const totalMs = duration > 0 ? duration : 30000;
+              const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(rect.width, 1)));
+              const startMs = Math.round(ratio * totalMs);
+              void addAssetToTimeline(asset, startMs);
+              break;
+            }
+          }
+        }
+      }
+      setDraggingAsset(null);
+    }
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [draggingAsset, duration]);
+
   const runningJobs = jobs.filter((job) => job.status === 'running' || job.status === 'pending').length;
   const filteredAssets = assets.filter((asset) =>
     assetSearch ? String(asset.name ?? '').toLowerCase().includes(assetSearch.toLowerCase()) : true
@@ -639,7 +835,7 @@ export function App() {
             </div>
           )}
           <button className="ibtn" onClick={openSettings} title="Settings"><Icon name="gear" /></button>
-          <button className="btn-export" onClick={exportTimeline} disabled={!timeline}>Export</button>
+          <button className="btn-export" onClick={() => setExportOpen(true)} disabled={!timeline}>Export</button>
         </div>
       </header>
 
@@ -691,12 +887,15 @@ export function App() {
               </div>
               <div className="ai-scroll ai-chat">
                 {chatMessages.map((message, index) => (
-                  <div key={index} className={`chat-message ${message.role}`}>{message.text}</div>
+                  <div key={index} className={`chat-message ${message.role}`}><ChatMarkdown text={message.text} /></div>
                 ))}
+                <AgentActivity events={agentChat.events} run={agentChat.run} />
               </div>
             </>
           )}
           <div className="ai-composer">
+            <div className="agent-mode">Local trusted · {navigator.platform.includes('Win') ? 'PowerShell' : 'Bash'}</div>
+            {agentChat.error && <div role="alert" className="agent-error">{agentChat.error}</div>}
             <div className="composer-row">
               <select defaultValue="agent">
                 <option value="agent">Agent</option>
@@ -705,7 +904,7 @@ export function App() {
                 <button className="ibtn" title="Add" onClick={() => addLog('Add is not implemented yet')}><Icon name="plus" size={15} /></button>
                 <button className="ibtn" title="Attach" onClick={() => addLog('Attach is not implemented yet')}><Icon name="attach" size={15} /></button>
                 <button className="ibtn" title="Voice input" onClick={() => addLog('Voice input is not implemented yet')}><Icon name="mic" size={15} /></button>
-                <button className="ibtn" title="History" onClick={() => addLog('History is not implemented yet')}><Icon name="history" size={15} /></button>
+                <button className="ibtn" title="History" onClick={() => { setAiView('chat'); void agentChat.history(); }}><Icon name="history" size={15} /></button>
                 <button className="ibtn" title="More" onClick={() => addLog('More is not implemented yet')}><Icon name="dots" size={15} /></button>
               </span>
             </div>
@@ -722,12 +921,13 @@ export function App() {
             />
             <div className="composer-row composer-footer">
               <span className="composer-hint">Ctrl+Enter to send</span>
-              <button className="send-button" onClick={sendChatMessage} title="Send"><Icon name="send" size={14} /></button>
+              <ContextUsageRing usage={agentChat.contextUsage} />
+              {agentChat.busy ? <button className="send-button" onClick={() => void agentChat.stop()} title="Stop Agent; submitted generation jobs continue">Stop</button> : <button className="send-button" onClick={sendChatMessage} title="Send"><Icon name="send" size={14} /></button>}
             </div>
           </div>
         </aside>
 
-        <section className="center-panel">
+        <section className={`center-panel${centerTab === 'canvas' && canvasExpanded ? ' canvas-expanded' : ''}`}>
           {centerTab === 'assets' ? (
             <>
               <div className="panel-tabs">
@@ -773,10 +973,25 @@ export function App() {
                     ) : assetView === 'grid' ? (
                       <div className="asset-grid">
                         {filteredAssets.map((asset) => (
-                          <div key={asset.path} className="asset-card">
+                          <div
+                            key={asset.path}
+                            className={`asset-card${selectedAssetPath === asset.path ? ' selected' : ''}`}
+                            onPointerDown={(e) => {
+                              if (e.button !== 0) return;
+                              e.preventDefault();
+                              setSelectedAssetPath(asset.path);
+                              setDraggingAsset(asset);
+                              setDragPos({ x: e.clientX, y: e.clientY });
+                              (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+                            }}
+                            onDoubleClick={() => {
+                              void addAssetToTimeline(asset);
+                            }}
+                            title="拖拽到时间线，或双击快速添加"
+                          >
                             <span className="asset-thumb">
                               {asset.type === 'image' ? (
-                                <img src={'file:///' + asset.path.replace(/\\/g, '/').replace(/^\/+/, '')} alt={asset.name} />
+                                <img src={'file:///' + asset.path.replace(/\\/g, '/').replace(/^\/+/, '')} alt={asset.name} style={{ pointerEvents: 'none' }} />
                               ) : (
                                 <Icon name={asset.type === 'video' ? 'video' : 'image'} size={18} />
                               )}
@@ -788,9 +1003,24 @@ export function App() {
                     ) : (
                       <div className="asset-list-view">
                         {filteredAssets.map((asset) => (
-                          <div key={asset.path} className="asset-row">
+                          <div
+                            key={asset.path}
+                            className={`asset-row${selectedAssetPath === asset.path ? ' selected' : ''}`}
+                            onPointerDown={(e) => {
+                              if (e.button !== 0) return;
+                              e.preventDefault();
+                              setSelectedAssetPath(asset.path);
+                              setDraggingAsset(asset);
+                              setDragPos({ x: e.clientX, y: e.clientY });
+                              (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+                            }}
+                            onDoubleClick={() => {
+                              void addAssetToTimeline(asset);
+                            }}
+                            title="拖拽到时间线，或双击快速添加"
+                          >
                             {asset.type === 'image' ? (
-                              <img src={'file:///' + asset.path.replace(/\\/g, '/').replace(/^\/+/, '')} alt={asset.name} style={{ width: 15, height: 15, objectFit: 'cover', borderRadius: 2 }} />
+                              <img src={'file:///' + asset.path.replace(/\\/g, '/').replace(/^\/+/, '')} alt={asset.name} style={{ width: 15, height: 15, objectFit: 'cover', borderRadius: 2, pointerEvents: 'none' }} />
                             ) : (
                               <Icon name={asset.type === 'video' ? 'video' : 'image'} size={15} />
                             )}
@@ -807,6 +1037,7 @@ export function App() {
             <>
               <div className="canvas-toolbar">
                 <button className="ibtn" title="Back" onClick={() => { setCenterTab('assets'); setCanvas(null); }}><Icon name="chevronLeft" size={15} /></button>
+                <button className="ibtn" title={canvasExpanded ? 'Shrink' : 'Expand'} onClick={() => setCanvasExpanded(!canvasExpanded)}><Icon name={canvasExpanded ? 'fit' : 'expand'} size={15} /></button>
                 <button className="tb-text" onClick={createBlankCanvas} disabled={!project}><Icon name="plus" size={13} /> New canvas</button>
                 {canvas && (
                   <>
@@ -822,13 +1053,17 @@ export function App() {
                     <button className="tb-text" onClick={addNode} disabled={!canvas}>Add node</button>
                     <button className="tb-text" onClick={() => renderCanvas(false)} disabled={!canvas}>Render</button>
                     <button className="tb-text accent" onClick={() => renderCanvas(true)} disabled={!canvas}>Force render</button>
+                    <button className="tb-text canvas-delete-action" onClick={() => void deleteCanvas(canvas.id)} disabled={!!deletingCanvas}>删除画布</button>
                   </>
                 )}
               </div>
               <div className="canvas-body">
+                {canvasDeleteError && <div className="canvas-delete-error" role="alert">{canvasDeleteError}<button onClick={() => setCanvasDeleteError('')} aria-label="关闭提示">×</button></div>}
                 {canvas ? (
                   <CanvasGraphView
                     canvas={canvas}
+                    assets={assets}
+                    canvases={canvases}
                     onConnect={connectCanvasNodes}
                     onRemoveNode={removeNode}
                     onRemoveEdge={removeEdge}
@@ -843,11 +1078,16 @@ export function App() {
                       <span className="canvas-card-meta">Start from a blank flow</span>
                     </button>
                     {canvases.map((item, index) => (
-                      <button key={item.id} className="canvas-card" onClick={() => openCanvas(item.id)}>
+                      <div key={item.id} className="canvas-card-wrap">
+                      <button className="canvas-card" onClick={() => openCanvas(item.id)}>
                         <span className="canvas-card-icon"><Icon name="share" size={16} /></span>
                         <span className="canvas-card-title">Canvas {index + 1}</span>
                         <span className="canvas-card-meta">{item.nodeCount} nodes</span>
                       </button>
+                      <button className="canvas-card-delete" aria-label={`删除 Canvas ${index + 1}`} title="删除画布" disabled={!!deletingCanvas} onClick={() => void deleteCanvas(item.id)}>
+                        {deletingCanvas === item.id ? '删除中…' : '删除'}
+                      </button>
+                      </div>
                     ))}
                   </div>
                 ) : (
@@ -869,25 +1109,29 @@ export function App() {
           title="Drag to resize"
         />
 
-        <section className="viewer-panel">
-          <div className="viewer-label">Viewer</div>
-          <div className="viewer-body">
-            {previewAsset?.path ? (
-              /\.(png|jpe?g|webp|gif)$/i.test(previewAsset.path) ? (
-                <img className="viewer-media" src={fileUrl(previewAsset.path)} alt="preview" />
-              ) : /\.(mp4|webm|mov)$/i.test(previewAsset.path) ? (
-                <video className="viewer-media" src={fileUrl(previewAsset.path)} controls />
-              ) : (
-                <div className="viewer-file">{previewAsset.path}</div>
-              )
-            ) : (
-              <div className="viewer-drop">
-                <Icon name="cloud" size={38} />
-                <span>Drop media here</span>
-              </div>
-            )}
-          </div>
-        </section>
+        <Player
+          previewAsset={previewAsset}
+          timelineMode={timelineMode}
+          timeline={timeline}
+          width={project?.settings?.width ?? 1920}
+          height={project?.settings?.height ?? 1080}
+          playing={playing}
+          playheadMs={playheadMs}
+          speed={speed}
+          looping={looping}
+          duration={duration}
+          videoRef={videoRef}
+          audioRef={audioRef}
+          onToggle={toggle}
+          onGoToStart={goToStart}
+          onGoToEnd={goToEnd}
+          onStepBack={stepBack}
+          onStepForward={stepForward}
+          onSetSpeed={setSpeed}
+          onToggleLoop={toggleLoop}
+          fileUrl={fileUrl}
+          fps={project?.settings?.fps ?? 30}
+        />
 
         <footer className="timeline-panel">
           <div className="timeline-toolbar">
@@ -904,18 +1148,22 @@ export function App() {
                 )}
               </span>
               <span className="tl-sep" />
-              <button className="ibtn" title="Go to start"><Icon name="skipBack" size={14} /></button>
-              <button className={`ibtn ${playing ? 'active' : ''}`} title="Play / pause" onClick={() => setPlaying(!playing)}>
+              <button className="ibtn" title="Go to start" onClick={goToStart}><Icon name="skipBack" size={14} /></button>
+              <button className={`ibtn ${playing ? 'active' : ''}`} title="Play / pause" onClick={toggle}>
                 <Icon name={playing ? 'pause' : 'play'} size={14} />
               </button>
-              <button className="ibtn" title="Go to end"><Icon name="skipFwd" size={14} /></button>
+              <button className="ibtn" title="Go to end" onClick={goToEnd}><Icon name="skipFwd" size={14} /></button>
               <span className="tl-sep" />
               <button className={`ibtn ${snapOn ? 'active' : ''}`} title="Snapping" onClick={() => setSnapOn(!snapOn)}><Icon name="magnet" size={15} /></button>
-              <button className="ibtn" title="Razor"><Icon name="scissors" size={14} /></button>
+              <button className={`ibtn ${razorMode ? 'active' : ''}`} title="Razor" onClick={() => setRazorMode(!razorMode)}><Icon name="scissors" size={14} /></button>
               <button className="ibtn" title="Unlink"><Icon name="unlink" size={14} /></button>
               <button className="ibtn" title="Marker"><Icon name="marker" size={14} /></button>
             </div>
-            <div className="tl-time">{formatTimelineTime(playheadMs)} / {formatTimelineTime(timelineDurationMs)}</div>
+            <button onClick={async () => {
+              try { await invoke('timeline.refresh-canvases', { path: projectPath }); await refreshTimeline(); }
+              catch (error) { addLog(String(error)); }
+            }}>Update canvas clips</button>
+            <div className="tl-time">{formatTimelineTime(playheadMs, project?.settings?.fps ?? 30)} / {formatTimelineTime(duration, project?.settings?.fps ?? 30)}</div>
             <div className="tl-group">
               <button className="ibtn" title="Zoom out" onClick={() => setZoom(Math.max(0, zoom - 10))}><Icon name="minus" size={14} /></button>
               <input className="zoom-slider" type="range" min={0} max={100} value={zoom} onChange={(event) => setZoom(Number(event.target.value))} />
@@ -928,30 +1176,78 @@ export function App() {
           <TimelineView
             timeline={timeline}
             onMoveClip={moveTimelineClip}
+            onRemoveClip={removeTimelineClip}
+            onSplitClip={splitTimelineClip}
+            onTrimClip={trimTimelineClip}
+            onRemoveTrack={removeTimelineTrack}
+            onDropAsset={(asset, trackId, startMs) => {
+              void addAssetToTimeline(asset, startMs, trackId);
+            }}
+            draggingAsset={draggingAsset}
+            dragPos={dragPos}
+            selectedClipId={selectedClipId}
+            onSelectClip={setSelectedClipId}
             zoom={zoom}
             playheadMs={playheadMs}
-            onSeek={setPlayheadMs}
+            onSeek={seek}
+            razorMode={razorMode}
+            fps={project?.settings?.fps ?? 30}
           />
         </footer>
       </div>
 
+      {draggingAsset && (
+        <div
+          className="drag-ghost"
+          style={{ left: dragPos.x + 15, top: dragPos.y + 15 }}
+        >
+          {draggingAsset.name}
+        </div>
+      )}
+
       {settingsOpen && (
         <div className="settings-overlay">
           <div className="settings-modal">
-            <h2>Runtime settings</h2>
+            <h2>设置</h2>
+            <h3 className="settings-section-title">图像与视频生成 · 火山方舟</h3>
+            <p className="settings-help">模型和服务地址保存到当前项目。视频模型需支持图生视频，并在你的账号下可用。</p>
+            <label>ARK Base URL <input value={runtimeSettings.arkBaseUrl} placeholder="https://ark.cn-beijing.volces.com/api/v3" onChange={(event) => setRuntimeSettings({ ...runtimeSettings, arkBaseUrl: event.target.value })} /></label>
             <label>ARK API Key <input type="password" value={runtimeSettings.arkApiKey} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, arkApiKey: event.target.value })} /></label>
+            <label>图像模型 / Image Model <input value={runtimeSettings.arkImageModel} placeholder="图像模型或接入点 ID" onChange={(event) => setRuntimeSettings({ ...runtimeSettings, arkImageModel: event.target.value })} /></label>
+            <label>视频模型 / Video Model <input value={runtimeSettings.arkVideoModel} placeholder="支持图生视频的模型或接入点 ID" onChange={(event) => setRuntimeSettings({ ...runtimeSettings, arkVideoModel: event.target.value })} /></label>
+            <h3 className="settings-section-title">图片上传 · TOS</h3>
+            <p className="settings-help">本地图片需要上传后交给视频模型读取。存储桶、地域和 Endpoint 应相互匹配。</p>
             <label>TOS Access Key ID <input value={runtimeSettings.tosAccessKeyId} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, tosAccessKeyId: event.target.value })} /></label>
             <label>TOS Access Key Secret <input type="password" value={runtimeSettings.tosAccessKeySecret} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, tosAccessKeySecret: event.target.value })} /></label>
             <label>TOS Bucket <input value={runtimeSettings.tosBucket} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, tosBucket: event.target.value })} /></label>
             <label>TOS Region <input value={runtimeSettings.tosRegion} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, tosRegion: event.target.value })} /></label>
             <label>TOS Endpoint <input value={runtimeSettings.tosEndpoint} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, tosEndpoint: event.target.value })} /></label>
+            <h3 className="settings-section-title">成片导出</h3>
             <label>FFmpeg path <input value={runtimeSettings.ffmpegPath} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, ffmpegPath: event.target.value })} /></label>
+            <h3 className="settings-section-title">Agent 对话</h3>
             <label>Agent Base URL <input value={runtimeSettings.agentBaseUrl} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, agentBaseUrl: event.target.value })} /></label>
             <label>Agent API Key <input type="password" value={runtimeSettings.agentApiKey} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, agentApiKey: event.target.value })} /></label>
             <label>Agent Model <input value={runtimeSettings.agentModel} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, agentModel: event.target.value })} /></label>
+            {settingsError && <div className="agent-error" role="alert">{settingsError}</div>}
             <div className="settings-actions">
-              <button onClick={saveRuntimeSettings}>Save</button>
-              <button onClick={() => setSettingsOpen(false)}>Cancel</button>
+              <button onClick={saveRuntimeSettings} disabled={settingsSaving}>{settingsSaving ? '保存中…' : '保存'}</button>
+              <button onClick={() => setSettingsOpen(false)} disabled={settingsSaving}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {exportOpen && (
+        <div className="settings-overlay" onClick={() => setExportOpen(false)}>
+          <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Export</h2>
+            <label>Width <input type="number" value={exportWidth} onChange={(e) => setExportWidth(Number(e.target.value))} /></label>
+            <label>Height <input type="number" value={exportHeight} onChange={(e) => setExportHeight(Number(e.target.value))} /></label>
+            <label>FPS <input type="number" value={exportFps} onChange={(e) => setExportFps(Number(e.target.value))} /></label>
+            <label>Quality (CRF, lower=better) <input type="number" min={0} max={51} value={exportCrf} onChange={(e) => setExportCrf(Number(e.target.value))} /></label>
+            <div className="settings-actions">
+              <button className="btn-export" onClick={exportTimeline}>Export to {projectPath}\export.mp4</button>
+              <button onClick={() => setExportOpen(false)}>Cancel</button>
             </div>
           </div>
         </div>

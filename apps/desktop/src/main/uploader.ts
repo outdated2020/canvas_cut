@@ -44,21 +44,11 @@ export class TosUploader implements AssetUploader {
       });
     }
 
-    const presign = (client as { preSignedUrl?: (args: unknown) => Promise<{ url?: string }> }).preSignedUrl;
-    if (presign) {
-      try {
-        const result = await presign.call(client, {
-          bucket: this.config.bucket,
-          key,
-          method: 'GET',
-          expires: this.config.urlTtlSeconds
-        });
-        return result.url ?? this.publicObjectUrl(key);
-      } catch {
-        return this.publicObjectUrl(key);
-      }
-    }
-    return this.publicObjectUrl(key);
+    const url = (client as { getPreSignedUrl: (args: unknown) => string }).getPreSignedUrl({
+      bucket: this.config.bucket, key, method: 'GET', expires: this.config.urlTtlSeconds
+    });
+    if (!url || !/^https?:\/\//.test(url)) throw new Error('TOS did not return a valid signed URL');
+    return url;
   }
 
   async remove(_url: string): Promise<void> {
@@ -71,11 +61,14 @@ export class TosUploader implements AssetUploader {
       const tos = require('@volcengine/tos-sdk') as {
         TosClient: new (options: unknown) => unknown;
       };
+      const endpoint = new URL(this.config.endpoint.includes('://') ? this.config.endpoint : `https://${this.config.endpoint}`);
+      if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.pathname !== '/' || endpoint.search || endpoint.hash) throw new Error('Invalid TOS endpoint');
       this.client = new tos.TosClient({
         accessKeyId: this.credentials.accessKeyId,
         accessKeySecret: this.credentials.accessKeySecret,
         region: this.config.region,
-        endpoint: this.config.endpoint
+        endpoint: endpoint.host,
+        secure: endpoint.protocol === 'https:'
       });
       return this.client;
     } catch (error) {
@@ -87,7 +80,4 @@ export class TosUploader implements AssetUploader {
     }
   }
 
-  private publicObjectUrl(key: string): string {
-    return `${this.config.endpoint.replace(/\/$/, '')}/${this.config.bucket}/${key}`;
-  }
 }

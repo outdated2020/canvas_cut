@@ -23,10 +23,14 @@ export async function jobWait(options: CliOptions): Promise<unknown> {
   const store = createStore(options);
   await store.requireOpen();
   const client = new LocalIpcClient(store.paths.root);
-  return client.request('job.wait', {
+  const timeoutMs = numberFlag(options.flags, 'timeout-ms', 1_800_000) as number;
+  if (timeoutMs < 1 || timeoutMs > 1_800_000) throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'timeout-ms must be 1..1800000');
+  const result = await client.request<{ status: string; error?: { message?: string } }>('job.wait', {
     jobId,
-    timeoutMs: numberFlag(options.flags, 'timeout-ms', 1_800_000)
-  });
+    timeoutMs
+  }, timeoutMs + 5000);
+  if (result.status !== 'succeeded') throw new CanvasCutError(result.status === 'cancelled' ? 'JOB_CANCELLED' : ERROR_CODES.RENDER_FAILED, result.error?.message ?? `Job ${result.status}`, { details: result });
+  return result;
 }
 
 export async function jobCancel(options: CliOptions): Promise<unknown> {

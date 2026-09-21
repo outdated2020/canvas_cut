@@ -177,7 +177,7 @@ export class InMemoryJobStore implements JobStore {
   list(options?: { status?: string; parentId?: string | null; limit?: number }): JobRecord[] {
     let records = [...this.jobs.values()];
     if (options?.status) records = records.filter((record) => record.status === options.status);
-    if (options?.parentId !== undefined) records = records.filter((record) => record.parent_id === options.parentId);
+    if (options?.parentId !== undefined) records = records.filter((record) => (record.parent_id ?? null) === options.parentId);
     records.sort((a, b) => b.created_at - a.created_at);
     if (options?.limit) records = records.slice(0, options.limit);
     return records;
@@ -238,7 +238,7 @@ export class JsonFileJobStore implements JobStore {
     this.ensureLoaded();
     let records = [...this.jobs.values()];
     if (options?.status) records = records.filter((record) => record.status === options.status);
-    if (options?.parentId !== undefined) records = records.filter((record) => record.parent_id === options.parentId);
+    if (options?.parentId !== undefined) records = records.filter((record) => (record.parent_id ?? null) === options.parentId);
     records.sort((a, b) => b.created_at - a.created_at);
     if (options?.limit) records = records.slice(0, options.limit);
     return records.map((record) => ({ ...record }));
@@ -285,3 +285,4 @@ export class JsonFileJobStore implements JobStore {
     await atomicWriteJson(this.filePath, [...this.jobs.values()], { pretty: true });
   }
 }
+

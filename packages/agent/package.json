@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@canvas-cut/core": "0.1.0",
+    "yaml": "^2.9.0",
     "@ai-sdk/openai": "^4.0.43",
     "ai": "^7.0.68",
     "zod": "^3.24.1"

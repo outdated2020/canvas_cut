@@ -14,54 +14,161 @@ import ReactFlow, {
   useNodesState
 } from 'reactflow';
 import 'reactflow/dist/style.css';
+import { NodeParamsInline, nodeLabels, isGenerationNode } from './NodeParamsInline';
 
 type AnyRecord = Record<string, any>;
 
 interface CanvasGraphViewProps {
   canvas: AnyRecord;
   config?: AnyRecord | null;
+  assets?: AnyRecord[];
+  canvases?: AnyRecord[];
   onConnect: (source: string, sourcePort: string, target: string, targetPort: string) => Promise<void>;
   onRemoveNode: (nodeId: string) => void;
   onRemoveEdge: (edgeId: string) => void;
-  onUpdateNodeParams: (nodeId: string, params: AnyRecord) => void;
+  onUpdateNodeParams: (nodeId: string, params: AnyRecord) => Promise<void> | void;
 }
 
-function CanvasNodeComponent({ data }: NodeProps<AnyRecord>) {
-  const statusColor: Record<string, string> = {
-    idle: '#9ca3af',
-    pending: '#f59e0b',
-    running: '#3b82f6',
-    succeeded: '#22c55e',
-    failed: '#ef4444',
-    cancelled: '#6b7280'
-  };
+function CanvasNodeComponent({ id, data, selected }: NodeProps<AnyRecord>) {
+  const [expanded, setExpanded] = useState(false);
 
-  const promptPreview =
-    data.params?.prompt || data.params?.text || '';
-
-  const cachedResult = data.cachedResult;
+  const cachedResult = data.cachedResult ?? (['image-input', 'video-input'].includes(data.type) ? data.params?.asset : undefined);
   const resultPreview =
     cachedResult && cachedResult.type === 'image' && cachedResult.path
       ? cachedResult.path
       : null;
+  const videoPreview = cachedResult?.type === 'video' ? cachedResult.path : null;
+  const mediaUrl = (path: string) => /^(https?:|file:)/i.test(path) ? path : 'file:///' + path.replace(/\\/g, '/').replace(/^\/+/, '');
+
+  const isTextToImage = data.type === 'text-to-image';
+  const isGeneration = isGenerationNode(data.type);
+  const status = data.status ?? 'idle';
+  const prompt = data.params?.prompt || data.params?.text || '';
+  const model = isGeneration ? data.config?.provider?.volcengine?.[data.type.endsWith('-to-video') ? 'videoModel' : 'imageModel'] || '' : '';
+
+  const isGenerating = status === 'running' || status === 'pending';
+  const isSucceeded = status === 'succeeded';
+  const isFailed = status === 'failed';
+
+  function handleNodeClick(e: React.MouseEvent) {
+    if ((e.target as HTMLElement).closest('.react-flow__handle')) return;
+    if ((e.target as HTMLElement).closest('.node-expanded-panel')) return;
+    setExpanded((prev) => !prev);
+  }
 
   return (
-    <div className="canvas-node" style={{ borderColor: statusColor[data.status] ?? '#d1d5db' }}>
-      <div className="canvas-node-title">{data.label}</div>
-      <div className="canvas-node-subtitle">{data.type}</div>
-      {promptPreview ? (
-        <div className="canvas-node-prompt" title={promptPreview}>
-          {promptPreview.length > 60 ? promptPreview.slice(0, 60) + '...' : promptPreview}
+    <div
+      className={`canvas-node-shell ${expanded ? 'is-expanded' : ''} ${selected ? 'is-selected' : ''} ${isGenerating ? 'is-generating' : ''}`}
+      onClick={handleNodeClick}
+    >
+      {/* Media Card */}
+      <div className="media-card">
+        {/* Succeeded - show image */}
+        {!isGenerating && !isFailed && resultPreview ? (
+          <>
+            <img
+              src={mediaUrl(resultPreview)}
+              alt="generated"
+              className="media-image"
+            />
+            {data.imageCount && data.imageCount > 1 ? (
+              <div className="count-badge">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="12" height="12">
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
+                {data.imageCount} 张
+              </div>
+            ) : null}
+          </>
+        ) : null}
+        {!isGenerating && !isFailed && videoPreview ? (
+          <video className="media-video nodrag nopan" src={mediaUrl(videoPreview)} controls preload="metadata" playsInline onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} />
+        ) : null}
+
+        {/* Generating / Pending */}
+        {isGenerating ? (
+          <div className={`generating-wash ${status === 'pending' ? 'queued' : ''}`}>
+            <div className="gen-content">
+              {status === 'pending' ? (
+                <>
+                  <svg className="gen-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <polyline points="12 6 12 12 16 14"></polyline>
+                  </svg>
+                  <div className="gen-label">等待生成...</div>
+                </>
+              ) : (
+                <>
+                  <div className="gen-spinner"></div>
+                  <div className="gen-label">正在生成{data.type.includes('video') ? '视频' : '内容'}...</div>
+                </>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Failed */}
+        {isFailed ? (
+          <div className="error-card">
+            <svg className="error-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="15" y1="9" x2="9" y2="15"></line>
+              <line x1="9" y1="9" x2="15" y2="15"></line>
+            </svg>
+            <div className="error-title">生成失败</div>
+            <div className="error-desc">{data.errorMessage || '点击查看详情'}</div>
+          </div>
+        ) : null}
+
+        {/* Idle / placeholder - no image yet */}
+        {!isGenerating && !isFailed && !resultPreview && !videoPreview && data.type === 'text-input' ? (
+          <div className="node-text-preview">{data.params?.text || '点击输入文本'}</div>
+        ) : null}
+        {!isGenerating && !isFailed && !resultPreview && !videoPreview && data.type !== 'text-input' ? (
+          <div className="generating-wash placeholder">
+            <div className="gen-content">
+              <svg className="gen-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                <polyline points="21 15 16 10 5 21"></polyline>
+              </svg>
+              <div className="gen-label">
+                {isSucceeded ? '已完成，暂无可预览媒体' : status === 'cancelled' ? '已取消' : isGeneration ? '点击设置生成参数' : data.type === 'output' ? '等待输出' : data.type === 'canvas-reference' ? '点击选择引用画布' : '点击选择素材'}
+                <br />
+                {isTextToImage && status === 'idle' ? '开始生成图片' : ''}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      {/* Node Footer */}
+      <div className="node-footer">
+        <svg className="footer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+          <path d="M2 17l10 5 10-5"></path>
+          <path d="M2 12l10 5 10-5"></path>
+        </svg>
+        <span className="footer-prompt" title={prompt}>
+          {nodeLabels[data.type] ?? data.label} {prompt ? `· ${prompt}` : ''}
+        </span>
+        {model ? (
+          <span className="footer-model">{model.split('-').slice(0, 2).join('-')}</span>
+        ) : null}
+      </div>
+
+      {expanded ? (
+        <div className="node-expanded-panel nodrag nopan nowheel" onClick={(event) => event.stopPropagation()}>
+          <NodeParamsInline nodeId={id} type={data.type} params={data.params ?? {}}
+            config={data.config} assets={data.assets} canvases={data.canvases}
+            result={cachedResult} onSave={data.onUpdateParams} />
         </div>
       ) : null}
-      {resultPreview ? (
-        <div className="canvas-node-result">
-          <img
-            src={'file:///' + resultPreview.replace(/\\/g, '/').replace(/^\/+/, '')}
-            alt="generated"
-          />
-        </div>
-      ) : null}
+
+      {/* Input handles */}
       {data.inputs?.map((port: AnyRecord, index: number) => (
         <Handle
           key={`in-${port.id}`}
@@ -72,6 +179,7 @@ function CanvasNodeComponent({ data }: NodeProps<AnyRecord>) {
           style={computeHandleStyle(index, data.inputs?.length ?? 1)}
         />
       ))}
+      {/* Output handles */}
       {data.outputs?.map((port: AnyRecord, index: number) => (
         <Handle
           key={`out-${port.id}`}
@@ -87,22 +195,30 @@ function CanvasNodeComponent({ data }: NodeProps<AnyRecord>) {
 }
 
 function computeHandleStyle(index: number, total: number): React.CSSProperties {
-  if (total <= 1) return { top: '50%' };
-  const step = 100 / (total + 1);
-  return { top: `${step * (index + 1)}%` };
+  // Align handles with the media card area
+  const cardHeight = 140; // approximate media card height
+  if (total <= 1) return { top: `${cardHeight / 2}px` };
+  const step = cardHeight / (total + 1);
+  return { top: `${step * (index + 1)}px` };
 }
 
 const nodeTypes = {
   canvasNode: CanvasNodeComponent
 };
 
-function layoutNodes(canvas: AnyRecord) {
+function layoutNodes(
+  canvas: AnyRecord,
+  config: AnyRecord | null | undefined,
+  onUpdateNodeParams: (nodeId: string, params: AnyRecord) => Promise<void> | void,
+  assets: AnyRecord[],
+  canvases: AnyRecord[]
+) {
   return (canvas.nodes ?? []).map((node: AnyRecord, index: number) => ({
     id: node.id,
     type: 'canvasNode',
     position: {
-      x: (index % 3) * 320,
-      y: Math.floor(index / 3) * 220
+      x: (index % 3) * 340,
+      y: Math.floor(index / 3) * 460
     },
     data: {
       label: String(node.type)
@@ -114,7 +230,13 @@ function layoutNodes(canvas: AnyRecord) {
       cachedResult: node.cachedResult,
       params: node.params,
       inputs: node.inputs,
-      outputs: node.outputs
+      outputs: node.outputs,
+      config,
+      assets,
+      canvases: canvases.filter(item => item.id !== canvas.id),
+      onUpdateParams: onUpdateNodeParams,
+      errorMessage: node.errorMessage,
+      imageCount: node.imageCount
     }
   }));
 }
@@ -130,136 +252,11 @@ function layoutEdges(canvas: AnyRecord) {
   }));
 }
 
-function NodeParamsForm({
-  node,
-  config,
-  onSave,
-  onCancel
-}: {
-  node: AnyRecord;
-  config?: AnyRecord | null;
-  onSave: (params: AnyRecord) => void;
-  onCancel: () => void;
-}) {
-  const params = node.params ?? {};
-  const [prompt, setPrompt] = useState(params.prompt ?? params.text ?? '');
-  const [negativePrompt, setNegativePrompt] = useState(params.negativePrompt ?? '');
-  const [model, setModel] = useState(
-    params.model ?? config?.provider?.volcengine?.imageModel ?? ''
-  );
-  const [width, setWidth] = useState(String(params.width ?? 1920));
-  const [height, setHeight] = useState(String(params.height ?? 1920));
-  const [seed, setSeed] = useState(params.seed != null ? String(params.seed) : '');
-  const [style, setStyle] = useState(params.style ?? '');
-
-  const modelOptions = config?.provider?.volcengine?.imageModel
-    ? [config.provider.volcengine.imageModel]
-    : [];
-
-  function handleSave() {
-    const newParams: AnyRecord = {
-      prompt,
-      width: Number(width),
-      height: Number(height)
-    };
-    if (negativePrompt) newParams.negativePrompt = negativePrompt;
-    if (model) newParams.model = model;
-    if (seed) newParams.seed = Number(seed);
-    if (style) newParams.style = style;
-    onSave(newParams);
-  }
-
-  return (
-    <div className="canvas-params-form">
-      <div className="canvas-params-title">Edit: {node.type}</div>
-
-      <label className="params-field">
-        <span>Prompt</span>
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Describe what you want to generate..."
-          rows={3}
-        />
-      </label>
-
-      <label className="params-field">
-        <span>Negative Prompt</span>
-        <input
-          value={negativePrompt}
-          onChange={(e) => setNegativePrompt(e.target.value)}
-          placeholder="Optional: what to avoid"
-        />
-      </label>
-
-      <label className="params-field">
-        <span>Model</span>
-        <input
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          list="model-list"
-          placeholder="Select or type model name"
-        />
-        <datalist id="model-list">
-          {modelOptions.map((m: string) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-      </label>
-
-      <div className="params-row">
-        <label className="params-field">
-          <span>Width</span>
-          <input
-            type="number"
-            value={width}
-            onChange={(e) => setWidth(e.target.value)}
-            min={64}
-            max={4096}
-          />
-        </label>
-        <label className="params-field">
-          <span>Height</span>
-          <input
-            type="number"
-            value={height}
-            onChange={(e) => setHeight(e.target.value)}
-            min={64}
-            max={4096}
-          />
-        </label>
-      </div>
-
-      <label className="params-field">
-        <span>Seed (optional)</span>
-        <input
-          type="number"
-          value={seed}
-          onChange={(e) => setSeed(e.target.value)}
-          placeholder="Random if empty"
-        />
-      </label>
-
-      <label className="params-field">
-        <span>Style (optional)</span>
-        <input
-          value={style}
-          onChange={(e) => setStyle(e.target.value)}
-          placeholder="e.g. cinematic, anime, photorealistic"
-        />
-      </label>
-
-      <div className="canvas-params-actions">
-        <button onClick={handleSave}>Save</button>
-        <button onClick={onCancel}>Cancel</button>
-      </div>
-    </div>
-  );
-}
-
 export function CanvasGraphView({
   canvas,
   config,
+  assets,
+  canvases,
   onConnect,
   onRemoveNode,
   onRemoveEdge,
@@ -267,29 +264,17 @@ export function CanvasGraphView({
 }: CanvasGraphViewProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [paramsText, setParamsText] = useState('');
 
-  const layout = useMemo(() => layoutNodes(canvas), [canvas]);
+  const layout = useMemo(
+    () => layoutNodes(canvas, config, onUpdateNodeParams, assets ?? [], canvases ?? []),
+    [canvas, config, onUpdateNodeParams, assets, canvases]
+  );
   const edgeLayout = useMemo(() => layoutEdges(canvas), [canvas]);
 
   useEffect(() => {
     setNodes(layout);
     setEdges(edgeLayout);
   }, [layout, edgeLayout, setNodes, setEdges]);
-
-  useEffect(() => {
-    setSelectedNodeId(null);
-  }, [canvas.id]);
-
-  const selectedNode = canvas.nodes?.find((node: AnyRecord) => node.id === selectedNodeId);
-  const isTextToImage = selectedNode?.type === 'text-to-image';
-
-  useEffect(() => {
-    if (selectedNode && !isTextToImage) {
-      setParamsText(JSON.stringify(selectedNode.params ?? {}, null, 2));
-    }
-  }, [selectedNodeId, selectedNode, isTextToImage]);
 
   function isValidConnection(connection: Connection): boolean {
     if (!connection.source || !connection.target || !connection.sourceHandle || !connection.targetHandle) {
@@ -346,23 +331,6 @@ export function CanvasGraphView({
     }
   }
 
-  function saveSelectedNodeParams() {
-    if (!selectedNodeId) return;
-    try {
-      const parsed = JSON.parse(paramsText) as AnyRecord;
-      onUpdateNodeParams(selectedNodeId, parsed);
-      setSelectedNodeId(null);
-    } catch {
-      window.alert('Params JSON is invalid');
-    }
-  }
-
-  function handleFormSave(params: AnyRecord) {
-    if (!selectedNodeId) return;
-    onUpdateNodeParams(selectedNodeId, params);
-    setSelectedNodeId(null);
-  }
-
   return (
     <div className="canvas-graph">
       <ReactFlow
@@ -374,7 +342,6 @@ export function CanvasGraphView({
         onConnect={handleConnect}
         onNodesDelete={handleNodesDelete}
         onEdgesDelete={handleEdgesDelete}
-        onNodeDoubleClick={(_event, node) => setSelectedNodeId(node.id)}
         isValidConnection={isValidConnection}
         fitView
         proOptions={{ hideAttribution: true }}
@@ -383,30 +350,6 @@ export function CanvasGraphView({
         <Controls />
         <Background gap={16} size={1} />
       </ReactFlow>
-      {selectedNode && isTextToImage && (
-        <NodeParamsForm
-          node={selectedNode}
-          config={config}
-          onSave={handleFormSave}
-          onCancel={() => setSelectedNodeId(null)}
-        />
-      )}
-      {selectedNode && !isTextToImage && (
-        <div className="canvas-params-editor">
-          <div className="canvas-params-title">
-            Edit node: {selectedNode.id}
-          </div>
-          <textarea
-            value={paramsText}
-            onChange={(event) => setParamsText(event.target.value)}
-            spellCheck={false}
-          />
-          <div className="canvas-params-actions">
-            <button onClick={saveSelectedNodeParams}>Save</button>
-            <button onClick={() => setSelectedNodeId(null)}>Cancel</button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

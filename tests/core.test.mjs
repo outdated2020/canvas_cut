@@ -259,3 +259,33 @@ test('VolcengineProvider text-to-image parses and downloads URL response', async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('canvas deletion protects timeline and graph references and preserves assets', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'canvas-delete-'));
+  try {
+    const store = new ProjectStore(dir);
+    await store.init('Delete test');
+    const canvas = createCanvas('to-delete');
+    await store.writeCanvas(canvas);
+    const assetPath = join(store.paths.assetsDir, 'keep.txt');
+    await writeFile(assetPath, 'keep');
+    const timeline = await store.readTimeline();
+    const track = addTrack(timeline, 'video', 'V1');
+    core.addCanvasClip(track, canvas, 0, 1000);
+    await store.writeTimeline(timeline);
+    await assert.rejects(store.removeCanvas(canvas.id), /时间线/);
+    assert.equal((await store.readCanvas(canvas.id)).id, canvas.id);
+    track.clips = [];
+    await store.writeTimeline(timeline);
+    const other = createCanvas('referrer');
+    addNode(other, 'canvas-reference', { canvasId: canvas.id });
+    await store.writeCanvas(other);
+    await assert.rejects(store.removeCanvas(canvas.id), /referenced/);
+    await store.removeCanvas(other.id);
+    await store.removeCanvas(canvas.id);
+    assert.equal((await store.listCanvasFiles()).length, 0);
+    assert.equal(await (await import('node:fs/promises')).readFile(assetPath, 'utf8'), 'keep');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

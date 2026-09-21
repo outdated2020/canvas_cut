@@ -40,7 +40,8 @@ function uniqueVideoClips(plan: RenderPlan): VideoClip[] {
       map.set(clip.id, clip);
     }
   }
-  return [...map.values()].sort((a, b) => a.startMs - b.startMs || a.id.localeCompare(b.id));
+  const order = new Map(plan.tracks.flatMap((track) => track.clips).map((clip, index) => [clip.id, index]));
+  return [...map.values()].sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }
 
 function uniqueAudioClips(plan: RenderPlan): MediaClip[] {
@@ -63,19 +64,14 @@ function subtitleClips(plan: RenderPlan): NonNullable<RenderSegment['activeSubti
   return [...map.values()].sort((a, b) => a.startMs - b.startMs || a.id.localeCompare(b.id));
 }
 
-export function buildFfmpegArgs(plan: RenderPlan): string[] {
+export function buildFfmpegArgs(plan: RenderPlan, audioAssetPaths: ReadonlySet<string> = new Set()): string[] {
   const videoClips = uniqueVideoClips(plan);
   const audioClips = uniqueAudioClips(plan);
   const subtitles = subtitleClips(plan);
+  const totalDuration = Math.max(...plan.segments.map((segment) => segment.endMs)) / 1000;
 
   if (videoClips.length === 0) {
     throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Cannot export a timeline without a video or image track');
-  }
-  if (videoClips.some((clip) => clip.transition) || audioClips.some((clip) => clip.transition)) {
-    throw new CanvasCutError(
-      ERROR_CODES.INVALID_PARAMS,
-      'Transitions are not implemented in the current FFmpeg exporter; remove transitions before exporting.'
-    );
   }
 
   const args: string[] = ['-y'];
@@ -84,7 +80,7 @@ export function buildFfmpegArgs(plan: RenderPlan): string[] {
 
   // Rebuild input order deterministically: all video clips first, then audio clips.
   for (const clip of videoClips) {
-    if (clip.kind === 'media' && clip.asset.type === 'image') {
+    if ((clip.kind === 'media' ? clip.asset : clip.renderedAsset)?.type === 'image') {
       args.push('-loop', '1', '-t', String(clip.durationMs / 1000), '-i', clipAssetPath(clip));
     } else {
       args.push('-i', clipAssetPath(clip));
@@ -104,20 +100,35 @@ export function buildFfmpegArgs(plan: RenderPlan): string[] {
     const start = clip.startMs / 1000;
     const duration = clip.durationMs / 1000;
     const speed = clip.speed ?? 1;
-    const inSec = clip.kind === 'media' ? clip.inMs / 1000 : 0;
-    const sourceDuration = clip.kind === 'media' ? (clip.outMs - clip.inMs) / 1000 : duration;
+    const inSec = (clip.inMs ?? 0) / 1000;
+    const sourceDuration = duration * speed;
     const label = `v${index}`;
-    const filter = clip.kind === 'media' && clip.asset.type === 'image'
-      ? `[${input}:v]scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,trim=duration=${duration},setpts=PTS-STARTPTS+${start}/TB[${label}]`
-      : `[${input}:v]trim=start=${inSec}:duration=${sourceDuration},setpts=(PTS-STARTPTS)/${speed}+${start}/TB,scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps}[${label}]`;
+    const hasTransition = clip.transition && clip.transition.type === 'crossfade';
+    const transDuration = hasTransition ? clip.transition!.durationMs / 1000 : 0;
+    const fadeOutStart = Math.max(0, duration - transDuration);
+    let fadeFilter = '';
+    if (hasTransition && transDuration > 0) {
+      fadeFilter = `,fade=t=in:st=0:d=${transDuration}:alpha=1,fade=t=out:st=${fadeOutStart}:d=${transDuration}:alpha=1`;
+    }
+    const scale = clip.transform?.scale ?? 1;
+    const scaledW = Math.max(2, Math.round(w * scale / 2) * 2);
+    const scaledH = Math.max(2, Math.round(h * scale / 2) * 2);
+    const angle = (clip.transform?.rotation ?? 0) * Math.PI / 180;
+    const isImage = (clip.kind === 'media' ? clip.asset : clip.renderedAsset)?.type === 'image';
+    const timing = isImage ? `trim=duration=${duration},setpts=PTS-STARTPTS` : `trim=start=${inSec}:duration=${sourceDuration},setpts=(PTS-STARTPTS)/${speed}`;
+    const filter = `[${input}:v]${timing},scale=${scaledW}:${scaledH}:force_original_aspect_ratio=decrease,setsar=1,fps=${fps},format=rgba,rotate=${angle}:ow=rotw(${angle}):oh=roth(${angle}):c=none,colorchannelmixer=aa=${clip.opacity ?? 1}${fadeFilter},setpts=PTS+${start}/TB[${label}]`;
     filters.push(filter);
   });
 
-  let currentVideoLabel = 'v0';
-  for (let index = 1; index < videoClips.length; index += 1) {
+  filters.push(`color=c=black:s=${plan.width}x${plan.height}:r=${plan.fps}:d=${totalDuration}[base]`);
+  let currentVideoLabel = 'base';
+  for (let index = 0; index < videoClips.length; index += 1) {
     const nextLabel = `vo${index}`;
+    const clip = videoClips[index]!;
+    const x = clip.transform?.x ?? 0;
+    const y = clip.transform?.y ?? 0;
     filters.push(
-      `[${currentVideoLabel}][v${index}]overlay=0:0:eof_action=pass[${nextLabel}]`
+      `[${currentVideoLabel}][v${index}]overlay=x=(W-w)/2+${x}:y=(H-h)/2+${y}:eof_action=pass:repeatlast=0:enable='gte(t,${clip.startMs / 1000})*lt(t,${(clip.startMs + clip.durationMs) / 1000})'[${nextLabel}]`
     );
     currentVideoLabel = nextLabel;
   }
@@ -135,23 +146,31 @@ export function buildFfmpegArgs(plan: RenderPlan): string[] {
   filters.push(`[${subtitleTarget}]format=yuv420p[vout]`);
 
   const audioLabels: string[] = [];
-  audioClips.forEach((clip, index) => {
+  const allAudio: Array<MediaClip | CanvasClip> = [...audioClips, ...videoClips.filter((clip) => audioAssetPaths.has(clipAssetPath(clip)))];
+  allAudio.forEach((clip, index) => {
     const input = inputs.get(clip.id);
     const label = `a${index}`;
-    const inSec = clip.inMs / 1000;
-    const duration = (clip.outMs - clip.inMs) / 1000;
+    const inSec = (clip.inMs ?? 0) / 1000;
+    const duration = clip.durationMs / 1000;
     const startMs = clip.startMs;
     const volume = clip.volume ?? 1;
     const speed = clip.speed ?? 1;
+    const hasTransition = clip.transition && clip.transition.type === 'crossfade';
+    const transDuration = hasTransition ? clip.transition!.durationMs / 1000 : 0;
+    const fadeOutStart = Math.max(0, duration - transDuration);
+    let afadeFilter = '';
+    if (hasTransition && transDuration > 0) {
+      afadeFilter = `,afade=t=in:st=0:d=${transDuration},afade=t=out:st=${fadeOutStart}:d=${transDuration}`;
+    }
     filters.push(
-      `[${input}:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=start=${inSec}:duration=${duration},asetpts=PTS-STARTPTS,atempo=${speed},adelay=${startMs}|${startMs},volume=${volume}[${label}]`
+      `[${input}:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=start=${inSec}:duration=${duration * speed},asetpts=PTS-STARTPTS,${tempoFilters(speed)},atrim=duration=${duration},volume=${volume}${afadeFilter},adelay=${startMs}|${startMs}[${label}]`
     );
     audioLabels.push(label);
   });
 
   if (audioLabels.length > 0) {
     filters.push(
-      `${audioLabels.map((label) => `[${label}]`).join('')}amix=inputs=${audioLabels.length}:duration=longest:dropout_transition=0[aout]`
+      `${audioLabels.map((label) => `[${label}]`).join('')}amix=inputs=${audioLabels.length}:duration=longest:dropout_transition=0:normalize=0,apad,atrim=duration=${totalDuration}[aout]`
     );
   }
 
@@ -161,12 +180,21 @@ export function buildFfmpegArgs(plan: RenderPlan): string[] {
   } else {
     args.push('-map', '[vout]', '-an');
   }
-  args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-pix_fmt', 'yuv420p');
+  args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', String(plan.crf ?? 18), '-pix_fmt', 'yuv420p', '-t', String(totalDuration));
   if (audioLabels.length > 0) {
     args.push('-c:a', 'aac', '-b:a', '192k');
   }
   args.push('-movflags', '+faststart', plan.outputPath);
   return args;
+}
+
+function tempoFilters(speed: number): string {
+  if (!Number.isFinite(speed) || speed <= 0) throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'Invalid audio speed');
+  const filters: string[] = [];
+  while (speed < 0.5) { filters.push('atempo=0.5'); speed /= 0.5; }
+  while (speed > 2) { filters.push('atempo=2'); speed /= 2; }
+  filters.push(`atempo=${speed}`);
+  return filters.join(',');
 }
 
 export interface FfmpegRunResult {
@@ -177,12 +205,13 @@ export interface FfmpegRunResult {
 export function runFfmpeg(
   executable: string,
   args: string[],
-  options?: { cwd?: string; timeoutMs?: number }
+  options?: { cwd?: string; timeoutMs?: number; signal?: AbortSignal }
 ): Promise<FfmpegRunResult> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(executable, args, {
       cwd: options?.cwd,
       windowsHide: true,
+      signal: options?.signal,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let stdout = '';
@@ -225,4 +254,66 @@ export function runFfmpeg(
 
 export async function ensureOutputDir(outputPath: string): Promise<void> {
   await fs.mkdir(dirname(outputPath), { recursive: true });
+}
+
+export interface MediaProbeInfo {
+  durationMs?: number;
+  width?: number;
+  height?: number;
+  hasVideo: boolean;
+  hasAudio: boolean;
+}
+
+/**
+ * Probe a media file using ffprobe to get duration, dimensions, and stream info.
+ * If ffprobe is not available, returns empty info (all optional fields undefined).
+ */
+export async function probeMedia(filePath: string, ffprobePath?: string): Promise<MediaProbeInfo> {
+  const exe = ffprobePath ?? process.env.FFPROBE_PATH ?? 'ffprobe';
+  return new Promise((resolve) => {
+    const args = [
+      '-v', 'error',
+      '-print_format', 'json',
+      '-show_streams',
+      '-show_format',
+      filePath
+    ];
+    const proc = spawn(exe, args, { windowsHide: true });
+    const timer = setTimeout(() => {
+      proc.kill();
+      resolve({ hasVideo: false, hasAudio: false });
+    }, 10_000);
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    proc.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+    proc.on('error', () => {
+      clearTimeout(timer);
+      resolve({ hasVideo: false, hasAudio: false });
+    });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        resolve({ hasVideo: false, hasAudio: false });
+        return;
+      }
+      try {
+        const data = JSON.parse(stdout);
+        const streams = data.streams ?? [];
+        const format = data.format ?? {};
+        const videoStream = streams.find((s: any) => s.codec_type === 'video');
+        const audioStream = streams.find((s: any) => s.codec_type === 'audio');
+        const durationSec = format.duration ? parseFloat(format.duration) : undefined;
+        resolve({
+          durationMs: durationSec ? Math.round(durationSec * 1000) : undefined,
+          width: videoStream?.width ? Number(videoStream.width) : undefined,
+          height: videoStream?.height ? Number(videoStream.height) : undefined,
+          hasVideo: !!videoStream,
+          hasAudio: !!audioStream
+        });
+      } catch {
+        resolve({ hasVideo: false, hasAudio: false });
+      }
+    });
+  });
 }

@@ -1,4 +1,5 @@
 import { CanvasCutError, ERROR_CODES } from '@canvas-cut/core';
+import { readFileSync } from 'node:fs';
 
 export interface CliOptions {
   project?: string;
@@ -30,11 +31,13 @@ export function parseArgs(argv: string[]): CliOptions {
     }
     if (arg.startsWith('--')) {
       const { key, inline } = parseLongOption(arg);
-      if (inline !== undefined) {
+      if (inline === undefined && ['json', 'dry-run', 'help', 'force'].includes(key)) {
+        flags[key] = true;
+      } else if (inline !== undefined) {
         flags[key] = inline;
       } else {
         const next = argv[index + 1];
-        if (next && !next.startsWith('-')) {
+        if (next && (!next.startsWith('-') || /^-\d/.test(next))) {
           flags[key] = next;
           index += 1;
         } else {
@@ -111,9 +114,20 @@ export function jsonFlag(
   name: string
 ): Record<string, unknown> | undefined {
   const value = flags[name];
+  const file = flags[`${name}-file`];
+  if (typeof file === 'string') {
+    if (value !== undefined) throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, `Use either --${name} or --${name}-file`);
+    let parsed: unknown;
+    try { parsed = JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); }
+    catch { throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, `Cannot read JSON from --${name}-file`); }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'JSON parameters must be an object');
+    return parsed as Record<string, unknown>;
+  }
   if (typeof value !== 'string') return undefined;
   try {
-    return JSON.parse(value) as Record<string, unknown>;
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Expected object');
+    return parsed as Record<string, unknown>;
   } catch {
     throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, `Invalid JSON for --${name}`);
   }

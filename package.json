@@ -10,7 +10,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "tsc -b",
-    "test": "npm run build:core && npm run build:cli && npm run build:agent && node --test tests/*.test.mjs",
+    "test": "tsc -b --force packages/core apps/cli packages/agent apps/desktop && node --test --test-timeout=30000 tests/*.test.mjs",
     "start:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-desktop.ps1",
     "dev:desktop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-desktop.ps1",
     "dev:desktop": "npm run dev --workspace @canvas-cut/desktop",
@@ -29,9 +29,7 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.43",
-    "@mastra/core": "^1.60.0",
     "ai": "^7.0.68",
-    "mastra": "^1.25.1",
     "zod": "^4.4.3"
   }
 }

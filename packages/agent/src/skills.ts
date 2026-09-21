@@ -1,88 +1,39 @@
 import { promises as fs } from 'node:fs';
-import type { Dirent } from 'node:fs';
-import { basename, join } from 'node:path';
-
-export interface SkillFrontmatter {
-  name: string;
-  description: string;
-  version?: string;
-  inputs?: Array<{
-    name: string;
-    type: string;
-    required?: boolean;
-    default?: string;
-    description?: string;
-  }>;
-  outputs?: string;
-  triggers?: string[];
-}
+import { join, resolve } from 'node:path';
+import { parse } from 'yaml';
 
 export interface Skill {
   sourcePath: string;
-  frontmatter: SkillFrontmatter;
+  frontmatter: { name: string; description: string; version?: string; inputs?: unknown[]; triggers?: string[]; outputs?: unknown };
   body: string;
 }
-
 export function parseSkill(content: string, sourcePath: string): Skill {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
-  if (!match) {
-    return {
-      sourcePath,
-      frontmatter: {
-        name: basename(sourcePath, '.md'),
-        description: content.slice(0, 200)
-      },
-      body: content
-    };
-  }
-
-  const frontmatter: SkillFrontmatter = { name: '', description: '' };
-  for (const line of match[1]?.split(/\r?\n/) ?? []) {
-    const separator = line.indexOf(':');
-    if (separator < 0) continue;
-    const key = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1).trim();
-    if (key === 'name') frontmatter.name = value;
-    else if (key === 'description') frontmatter.description = value;
-    else if (key === 'version') frontmatter.version = value;
-    else if (key === 'outputs') frontmatter.outputs = value;
-  }
-  return {
-    sourcePath,
-    frontmatter,
-    body: match[2] ?? ''
-  };
+  const match = content.replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)([\s\S]*)$/);
+  if (!match) throw new Error('Skill requires YAML frontmatter');
+  const metadata = parse(match[1]!, { maxAliasCount: 20 });
+  if (!metadata || typeof metadata.name !== 'string' || !/^[a-z0-9][a-z0-9-]*$/.test(metadata.name)
+    || typeof metadata.description !== 'string' || !metadata.description.trim()) throw new Error('Skill requires a valid name and description');
+  return { sourcePath: resolve(sourcePath), frontmatter: metadata, body: match[2]! };
 }
-
+/** Directories ordered from lowest to highest precedence. */
 export class SkillRegistry {
-  constructor(private readonly directories: string[]) {}
-
+  diagnostics: Array<{ path: string; message: string }> = [];
+  constructor(private directories: string[]) {}
   async list(): Promise<Skill[]> {
-    const skills: Skill[] = [];
+    this.diagnostics = [];
+    const selected = new Map<string, Skill>();
     for (const directory of this.directories) {
-      let entries: Dirent[] = [];
-      try {
-        entries = await fs.readdir(directory, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          const skillPath = join(directory, entry.name, 'SKILL.md');
-          try {
-            const content = await fs.readFile(skillPath, 'utf8');
-            skills.push(parseSkill(content, skillPath));
-          } catch {
-            // Ignore missing skills.
-          }
-        }
+      let entries;
+      try { entries = await fs.readdir(directory, { withFileTypes: true }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.diagnostics.push({ path: directory, message: String(error) }); continue; }
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isDirectory()) continue;
+        const path = join(directory, entry.name, 'SKILL.md');
+        try { const skill = parseSkill(await fs.readFile(path, 'utf8'), path); selected.set(skill.frontmatter.name, skill); }
+        catch (error) { this.diagnostics.push({ path, message: String(error) }); }
       }
     }
-    return skills;
+    return [...selected.values()].sort((a, b) => a.frontmatter.name.localeCompare(b.frontmatter.name));
   }
-
-  async read(name: string): Promise<Skill | undefined> {
-    const skills = await this.list();
-    return skills.find((skill) => skill.frontmatter.name === name);
-  }
+  async read(name: string) { return (await this.list()).find((skill) => skill.frontmatter.name === name); }
 }
