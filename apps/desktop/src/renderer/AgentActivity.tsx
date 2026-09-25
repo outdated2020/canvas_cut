@@ -1,6 +1,7 @@
 type Value = Record<string, any>;
 const names: Record<string, string> = {
-  list_files: '查看目录', read_file: '读取文件', write_file: '写入文件', edit_file: '编辑文件',
+  list_files: '查看目录', read_file: '读取文件', write_file: '写入文件', apply_patch: '应用补丁', search_files: '搜索文件', search_text: '搜索内容',
+  write_stdin: '终端输入', resize_terminal: '调整终端', list_skills: '查看技能', load_skill: '加载技能',
   exec_command: '执行命令', read_process_output: '检查运行结果', terminate_process: '停止命令'
 };
 const statuses: Record<string, string> = {

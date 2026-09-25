@@ -2,9 +2,12 @@ import { promises as fs, appendFileSync, readSync, openSync, closeSync } from 'n
 import { resolve, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn, ChildProcess } from 'node:child_process';
+import { FileTools, recoverPatches } from './files';
+import { ToolRegistry, BASE_TOOLS } from './tools';
+import { PtyProcesses } from './pty';
 
 export const OUTPUT_LIMIT = 32 * 1024;
-export interface ToolContext { sessionId: string; runId: string; signal: AbortSignal }
+export interface ToolContext { sessionId: string; runId: string; toolCallId?: string; signal: AbortSignal }
 export interface AgentHost {
   mode: string;
   cwd: string;
@@ -17,6 +20,7 @@ interface ProcessRecord {
   stdoutPath: string; stderrPath: string; exitCode: number | null;
   status: 'running' | 'completed' | 'failed' | 'cancelled' | 'timed-out';
   done: Promise<void>; timer?: NodeJS.Timeout;
+  writes?: Promise<unknown>; size?: number; error?: string;
 }
 export async function atomicText(path: string, content: string) {
   await fs.mkdir(dirname(path), { recursive: true });
@@ -47,62 +51,48 @@ export class LocalAgentHost implements AgentHost {
   readonly cwd: string;
   readonly shell = process.platform === 'win32' ? 'PowerShell' : 'Bash';
   private processes = new Map<string, ProcessRecord>();
-  constructor(private options: { cwd: string; logDir: string; env?: NodeJS.ProcessEnv }) { this.cwd = resolve(options.cwd); }
+  private files: FileTools;
+  private registry = new ToolRegistry();
+  private pty: PtyProcesses;
+  private ready: Promise<unknown>;
+  constructor(private options: { cwd: string; logDir: string; env?: NodeJS.ProcessEnv; bashPath?: string; powershellPath?: string; journalDir?: string }) {
+    this.cwd = resolve(options.cwd);
+    const journal = options.journalDir ?? join(options.logDir, 'patches');
+    this.files = new FileTools(this.cwd, journal); this.ready = recoverPatches(journal);
+    this.pty = new PtyProcesses(options);
+    for (const [name, spec] of Object.entries(BASE_TOOLS)) this.registry.register({ name, description: spec.description,
+      inputSchema: { type: 'object', properties: spec.properties, required: spec.required, additionalProperties: false },
+      execute: (args, context) => this.dispatch(name, args, context) });
+  }
 
   async execute(name: string, args: Record<string, unknown>, context: ToolContext): Promise<unknown> {
+    await this.ready;
+    return this.registry.execute(name, args, context);
+  }
+  private async dispatch(name: string, args: Record<string, unknown>, context: ToolContext): Promise<unknown> {
     context.signal.throwIfAborted();
-    const path = () => resolve(this.cwd, textArg(args, 'path'));
+    if (['list_files', 'read_file', 'write_file', 'apply_patch', 'search_files', 'search_text'].includes(name)) return this.files.execute(name, args, context);
+    if ((name === 'exec_command' && args.tty) || this.pty.has(String(args.processId ?? ''))) return this.pty.execute(name, args, context);
     switch (name) {
-      case 'list_files': {
-        const root = path();
-        const depth = bounded(args.depth, 1, 5, 1);
-        const offset = bounded(args.offset, 0, 100000);
-        const limit = bounded(args.limit, 100, 500, 1);
-        const entries: Array<{ path: string; type: string }> = [];
-        let visited = 0; let more = false;
-        const walk = async (dir: string, level: number): Promise<void> => {
-          const children = (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
-          for (const child of children) {
-            context.signal.throwIfAborted();
-            if (entries.length >= limit) { more = true; return; }
-            const file = join(dir, child.name);
-            if (visited++ >= offset) entries.push({ path: file, type: child.isSymbolicLink() ? 'symlink' : child.isDirectory() ? 'directory' : 'file' });
-            if (child.isDirectory() && level < depth) await walk(file, level + 1);
-            if (more) return;
-          }
-        };
-        await walk(root, 1);
-        return { path: root, entries, nextOffset: more ? offset + entries.length : null };
-      }
-      case 'read_file': {
-        const file = path();
-        const start = bounded(args.startLine, 1, 10000000, 1);
-        const limit = bounded(args.lineCount, 200, 2000, 1);
-        const stat = await fs.stat(file);
-        if (stat.size > 16 * 1024 * 1024) throw new Error('Text file exceeds 16 MiB; use shell for targeted reading');
-        const content = await fs.readFile(file, 'utf8');
-        if (content.includes('\0')) throw new Error('Binary files are not supported');
-        const lines = content.split(/\r?\n/);
-        return { path: file, startLine: start, totalLines: lines.length, content: lines.slice(start - 1, start - 1 + limit).join('\n'), nextLine: start - 1 + limit < lines.length ? start + limit : null };
-      }
-      case 'write_file': {
-        const file = path(); const content = textArg(args, 'content');
-        if (Buffer.byteLength(content) > 1024 * 1024) throw new Error('Writes are limited to 1 MiB per call');
-        await atomicText(file, content);
-        return { path: file, bytes: Buffer.byteLength(content) };
-      }
-      case 'edit_file': {
-        const file = path(); const old = textArg(args, 'oldText'); const replacement = textArg(args, 'newText');
-        if (!old) throw new Error('oldText cannot be empty');
-        const original = await fs.readFile(file, 'utf8');
-        const position = original.indexOf(old);
-        if (position < 0 || original.indexOf(old, position + 1) >= 0) throw new Error('oldText must match exactly once');
-        const latest = await fs.readFile(file, 'utf8');
-        if (latest !== original) throw new Error('File changed while editing; read it again');
-        await atomicText(file, original.slice(0, position) + replacement + original.slice(position + old.length));
-        return { path: file, edited: true };
-      }
       case 'exec_command': return this.start(args, context);
+      case 'write_stdin': {
+        const record = this.owned(textArg(args, 'processId'), context);
+        const next = (record.writes ?? Promise.resolve()).catch(() => undefined).then(async () => {
+          context.signal.throwIfAborted();
+          const chars = String(args.chars ?? ''), action = args.action ?? 'write';
+          if (!chars && action === 'write') return;
+          if (record.status !== 'running') throw new Error('Process has exited');
+          if (Buffer.byteLength(chars) > 1024 * 1024) throw new Error('Input exceeds 1 MiB');
+          if (action === 'eof') record.child.stdin!.end();
+          else if (action === 'interrupt') {
+            if (process.platform === 'win32') throw new Error('Use tty for Ctrl-C on Windows, or terminate_process');
+            process.kill(-record.child.pid!, 'SIGINT');
+          } else await new Promise<void>((done, reject) => record.child.stdin!.write(chars, error => error ? reject(error) : done()));
+        });
+        record.writes = next; await next;
+        if (record.status === 'running') await this.wait(record.done, Number(args.waitMs ?? 1000));
+        return this.output(record, Number(args.stdoutOffset ?? 0), Number(args.stderrOffset ?? 0));
+      }
       case 'read_process_output': {
         const record = this.owned(textArg(args, 'processId'), context);
         const waitMs = bounded(args.waitMs, 1000, 10000);
@@ -119,7 +109,7 @@ export class LocalAgentHost implements AgentHost {
   }
   private owned(id: string, context: ToolContext) {
     const record = this.processes.get(id);
-    if (!record || record.sessionId !== context.sessionId) throw new Error('Process not found in this session; processes do not survive application restart');
+    if (!record || record.sessionId !== context.sessionId || record.runId !== context.runId) throw new Error('Process not found in this session/run; processes do not survive application restart');
     return record;
   }
   private async start(args: Record<string, unknown>, context: ToolContext) {
@@ -133,7 +123,9 @@ export class LocalAgentHost implements AgentHost {
     await Promise.all([fs.writeFile(stdoutPath, ''), fs.writeFile(stderrPath, '')]);
     const windows = process.platform === 'win32';
     const prelude = "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n";
-    const shellArgs = windows
+    const powershell = args.shell ? args.shell === 'powershell' : windows;
+    const executable = powershell ? this.options.powershellPath ?? 'powershell.exe' : await this.pty.bashPath();
+    const shellArgs = powershell
       ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(prelude + command, 'utf16le').toString('base64')]
       : ['--noprofile', '--norc', '-c', command];
     const env = cleanEnvironment(process.env);
@@ -141,14 +133,19 @@ export class LocalAgentHost implements AgentHost {
       if (windows) for (const existing of Object.keys(env)) if (existing.toLowerCase() === key.toLowerCase()) delete env[existing];
       env[key] = value;
     }
-    const child = spawn(windows ? 'powershell.exe' : '/bin/bash', shellArgs, {
+    const child = spawn(executable, shellArgs, {
       cwd, env, windowsHide: true,
-      detached: !windows, stdio: ['ignore', 'pipe', 'pipe']
+      detached: !windows, stdio: ['pipe', 'pipe', 'pipe']
     });
     let finish!: () => void;
     const record: ProcessRecord = { id, runId: context.runId, sessionId: context.sessionId, child, stdoutPath, stderrPath, exitCode: null, status: 'running', done: new Promise((r) => { finish = r; }) };
     this.processes.set(id, record);
-    const append = (file: string, chunk: Buffer) => { try { appendFileSync(file, chunk); } catch { void this.kill(record, 'failed'); } };
+    const append = (file: string, chunk: Buffer) => {
+      record.size = (record.size ?? 0) + chunk.length;
+      if (record.size > 64 * 1024 * 1024) { record.error = 'Process log exceeded 64 MiB'; void this.kill(record, 'failed'); return; }
+      try { appendFileSync(file, chunk); } catch { void this.kill(record, 'failed'); }
+    };
+    child.stdin?.on('error', error => { record.error = error.message; });
     child.stdout?.on('data', (chunk: Buffer) => append(stdoutPath, chunk));
     child.stderr?.on('data', (chunk: Buffer) => append(stderrPath, chunk));
     const abort = () => { void this.kill(record, 'cancelled'); };
@@ -161,7 +158,7 @@ export class LocalAgentHost implements AgentHost {
     });
     record.timer = setTimeout(() => { void this.kill(record, 'timed-out'); }, timeoutMs);
     if (context.signal.aborted) abort();
-    await this.wait(record.done, 1000);
+    await this.wait(record.done, Number(args.yieldTimeMs ?? 1000));
     return this.output(record, 0, 0);
   }
   private async wait(done: Promise<void>, ms: number) {
@@ -186,7 +183,7 @@ export class LocalAgentHost implements AgentHost {
         return { text: buffer.subarray(0, size).toString('utf8'), nextOffset: offset + size, logPath: path };
       } finally { closeSync(fd); }
     };
-    return { processId: record.id, status: record.status, exitCode: record.exitCode, stdout: read(record.stdoutPath, stdoutOffset), stderr: read(record.stderrPath, stderrOffset) };
+    return { processId: record.id, status: record.status, exitCode: record.exitCode, error: record.error, stdout: read(record.stdoutPath, stdoutOffset), stderr: read(record.stderrPath, stderrOffset) };
   }
   private async kill(record: ProcessRecord, status: ProcessRecord['status']) {
     if (record.status !== 'running') { await this.wait(record.done, 3000); return; }
@@ -203,5 +200,5 @@ export class LocalAgentHost implements AgentHost {
     }
     await this.wait(record.done, 3000);
   }
-  async stopRun(runId: string) { await Promise.all([...this.processes.values()].filter((p) => p.runId === runId).map((p) => this.kill(p, 'cancelled'))); }
+  async stopRun(runId: string) { await Promise.all([this.pty.stopRun(runId), ...[...this.processes.values()].filter((p) => p.runId === runId).map((p) => this.kill(p, 'cancelled'))]); }
 }

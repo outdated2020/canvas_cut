@@ -51,7 +51,7 @@ console.log(JSON.stringify({canvasId:c,jobId:submitted.jobId}));`;
    step++;
    return new Response(JSON.stringify({id:'r'+step,object:'chat.completion',created:1,model:'test',choices:[{index:0,finish_reason:action?'tool_calls':'stop',message:action?{role:'assistant',content:null,tool_calls:[{id:'c'+step,type:'function',function:{name:action[0],arguments:JSON.stringify(action[1])}}]}:{role:'assistant',content:'Rendered'}}],usage:{prompt_tokens:1,completion_tokens:1,total_tokens:2}}),{headers:{'content-type':'application/json'}});
   };
-  const result=await agent.runAgentMessage({apiKey:'test',fetch,host,skills:new agent.SkillRegistry([]),context:{sessionId:'s',runId:'r',signal:new AbortController().signal},logDir:dir,messages,save:async()=>{},emit:async()=>{}});
+  const result=await agent.runAgentMessage({apiKey:'test',streaming:false,fetch,host,skills:new agent.SkillRegistry([]),context:{sessionId:'s',runId:'r',signal:new AbortController().signal},logDir:dir,messages,save:async()=>{},emit:async()=>{}});
   assert.equal(result.text,'Rendered');assert.equal(generations,1);
   const timeline=await store.readTimeline();assert.equal(timeline.tracks[0].clips[0].durationMs,3000);
   assert.equal(jobStore.list({parentId:null})[0].status,'succeeded');

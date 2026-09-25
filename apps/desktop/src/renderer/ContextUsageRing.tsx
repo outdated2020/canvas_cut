@@ -3,6 +3,7 @@ export interface ContextUsage {
   limitCharacters: number;
   compactThreshold: number;
   ratio: number;
+  estimatedTokens?: number;
   lastRequest?: { inputTokens?: number; outputTokens?: number; model?: string; timestamp?: number } | null;
 }
 
@@ -13,8 +14,9 @@ export function ContextUsageRing({ usage }: { usage: ContextUsage | null }) {
   const request = usage?.lastRequest;
   const description = usage ? [
     `对话上下文：${format(usage.usedCharacters)} / ${format(usage.limitCharacters)} 字符（${percent}%）`,
-    '按当前保留消息的序列化长度统计，包含工具调用和结果；不含系统提示词、工具定义及未发送草稿。',
-    `达到 ${format(usage.compactThreshold)} 字符后，会在下次发送前归档历史。`,
+    '包含保留消息及最近一次请求的系统提示、工具定义开销，不含未发送草稿。',
+    `达到 ${format(usage.compactThreshold)} 字符后，在完整工具交互边界尝试归档和摘要压缩。`,
+    `估算 ${format(usage.estimatedTokens ?? Math.ceil(usage.usedCharacters / 4))} tokens；实际用量见最近请求。`,
     '圆环表示应用的字符预算，不是模型 token 窗口。',
     request?.inputTokens != null ? `最近一次模型请求：输入 ${format(request.inputTokens)} tokens${request.outputTokens != null ? `，输出 ${format(request.outputTokens)} tokens` : ''}（${request.model ?? '当前模型'}）` : '模型 token 用量暂无数据。'
   ].join('\n') : '上下文统计加载中';

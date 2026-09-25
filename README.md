@@ -1,5 +1,7 @@
 # Canvas Cut
 
+通用 Agent Runtime 的工具参数、MCP/Shell 配置和恢复机制见 [AGENT_RUNTIME.md](AGENT_RUNTIME.md)。
+
 Electron 视频创作原型：节点生成画布、时间线、Agent 与本地 CLI。当前实现边界和待办见 [PLAN.md](PLAN.md)，尚未完成真实成片流程验收。
 
 ## 开发环境

@@ -501,6 +501,19 @@ button:disabled {
   letter-spacing: 0.5px;
 }
 
+.conversation-manager { padding: 10px 12px; border-bottom: 1px solid #333; font-size: 12px; }
+.conversation-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.conversation-row select { flex: 1; min-width: 0; width: 0; }
+.conversation-manager select, .conversation-manager button, .conversation-confirm input { background: #242424; color: #ddd; border: 1px solid #444; border-radius: 5px; padding: 5px 7px; }
+.conversation-manager button { cursor: pointer; white-space: nowrap; }
+.conversation-manager button:disabled { opacity: .4; cursor: default; }
+.conversation-actions { flex-wrap: wrap; }
+.conversation-actions label { margin-right: auto; white-space: nowrap; }
+.conversation-confirm { padding: 8px 0; }
+.conversation-confirm input { box-sizing: border-box; width: 100%; margin-bottom: 8px; }
+.conversation-confirm button { margin-right: 6px; }
+.conversation-confirm p { overflow-wrap: anywhere; }
+.conversation-manager small { color: #aaa; }
 .chat-top {
   padding: 10px 16px 0;
 }

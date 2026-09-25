@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { join, delimiter } from 'node:path';
 import { homedir } from 'node:os';
-import { AgentSessionService, LocalAgentHost, atomicText } from '@canvas-cut/agent';
+import { AgentSessionService, LocalAgentHost, atomicText, parseRuntimeConfig } from '@canvas-cut/agent';
 
 export async function createAgentService(options: {
   userDataDir: string; appRoot: string; executable: string;
@@ -24,9 +24,14 @@ export async function createAgentService(options: {
     configure: async (projectPath) => {
       await fs.access(join(projectPath, 'project.json'));
       const settings = await options.settings();
-      return { apiKey: String(settings.agentApiKey ?? ''), baseUrl: String(settings.agentBaseUrl ?? ''), model: String(settings.agentModel ?? '') };
+      const config = parseRuntimeConfig(JSON.parse(String(settings.agentRuntime ?? '{}')));
+      return { ...config, apiKey: String(settings.agentApiKey ?? ''), baseUrl: String(settings.agentBaseUrl ?? ''), model: String(settings.agentModel ?? ''),
+        applicationPrompt: 'CLI entry: canvas-cut is available in PATH. Use --help and manifest --json to discover commands. Use skills for Canvas Cut video workflows. For requests requiring finished output, inspect asynchronous application jobs until terminal status; for submission-only requests, report the job identifier and current status.' };
     },
-    createHost: (cwd, logDir) => new LocalAgentHost({ cwd, logDir, env: { PATH: binDir + delimiter + (process.env.PATH ?? process.env.Path ?? '') } }),
+    createHost: async (cwd, logDir) => {
+      const settings = await options.settings(), config = parseRuntimeConfig(JSON.parse(String(settings.agentRuntime ?? '{}')));
+      return new LocalAgentHost({ cwd, logDir, journalDir: join(options.userDataDir, 'agent', 'patches'), bashPath: config.bashPath, powershellPath: config.powershellPath, env: { PATH: binDir + delimiter + (process.env.PATH ?? process.env.Path ?? '') } });
+    },
     skillDirectories: (projectPath) => [join(options.appRoot, '..', '..', 'skills'), join(homedir(), '.canvas-cut', 'skills'), join(projectPath, 'skills')]
   });
 }

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useMemo, useState } from 'react';
 import { usePlayer } from './usePlayer';
 import { useAgentChat } from './useAgentChat';
+import { Conversations, useConversations } from './Conversations';
 import { ChatMarkdown } from './ChatMarkdown';
 import { AgentActivity } from './AgentActivity';
+import { RuntimeSettings } from './RuntimeSettings';
 import { ContextUsageRing } from './ContextUsageRing';
 import { Player } from './Player';
 import { CanvasGraphView } from './CanvasGraphView';
@@ -89,8 +91,12 @@ export function App() {
   const [canvasExpanded, setCanvasExpanded] = useState(false);
   const [draggingAsset, setDraggingAsset] = useState<AnyRecord | null>(null);
   const [dragPos, setDragPos] = useState({ x: 0, y: 0 });
-  const [chatInput, setChatInput] = useState('');
-  const agentChat = useAgentChat(projectPath, async () => { await Promise.all([refreshSidebar(), refreshTimeline(), refreshCanvas().catch(() => setCanvas(null))]); }, () => setAiView('chat'));
+  const conversations = useConversations(projectPath);
+  const draftKey = JSON.stringify([projectPath, conversations.selected]);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const chatInput = drafts[draftKey] ?? '';
+  const setChatInput = (value: string) => setDrafts(current => ({ ...current, [draftKey]: value }));
+  const agentChat = useAgentChat(projectPath, conversations.selected, async () => { await Promise.all([refreshSidebar(), refreshTimeline(), refreshCanvas().catch(() => setCanvas(null))]); }, () => setAiView('chat'));
   const { messages: chatMessages, setMessages: setChatMessages } = agentChat;
   const [canvas, setCanvas] = useState<AnyRecord | null>(null);
   const [deletingCanvas, setDeletingCanvas] = useState<string | null>(null);
@@ -691,9 +697,9 @@ export function App() {
 
   async function sendChatMessage() {
     const text = chatInput.trim();
-    if (!text || agentChat.busy) return;
+    if (!text || agentChat.busy || !agentChat.ready || !conversations.current || conversations.current.archivedAt) return;
     setAiView('chat');
-    if (await agentChat.send(text)) setChatInput('');
+    if (await agentChat.send(text)) setDrafts(current => current[draftKey]?.trim() === text ? { ...current, [draftKey]: '' } : current);
   }
 
   useEffect(() => {
@@ -880,11 +886,7 @@ export function App() {
             </div>
           ) : (
             <>
-              <div className="chat-top">
-                <button className="chat-new" onClick={() => setAiView('templates')}>
-                  <Icon name="plus" size={13} /> New creation
-                </button>
-              </div>
+              <Conversations model={conversations} busy={agentChat.busy} />
               <div className="ai-scroll ai-chat">
                 {chatMessages.map((message, index) => (
                   <div key={index} className={`chat-message ${message.role}`}><ChatMarkdown text={message.text} /></div>
@@ -904,11 +906,12 @@ export function App() {
                 <button className="ibtn" title="Add" onClick={() => addLog('Add is not implemented yet')}><Icon name="plus" size={15} /></button>
                 <button className="ibtn" title="Attach" onClick={() => addLog('Attach is not implemented yet')}><Icon name="attach" size={15} /></button>
                 <button className="ibtn" title="Voice input" onClick={() => addLog('Voice input is not implemented yet')}><Icon name="mic" size={15} /></button>
-                <button className="ibtn" title="History" onClick={() => { setAiView('chat'); void agentChat.history(); }}><Icon name="history" size={15} /></button>
+                <button className="ibtn" title="对话管理" onClick={() => setAiView('chat')}><Icon name="history" size={15} /></button>
                 <button className="ibtn" title="More" onClick={() => addLog('More is not implemented yet')}><Icon name="dots" size={15} /></button>
               </span>
             </div>
             <textarea
+              disabled={!agentChat.ready || !conversations.current || Boolean(conversations.current.archivedAt)}
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
               onKeyDown={(event) => {
@@ -922,7 +925,7 @@ export function App() {
             <div className="composer-row composer-footer">
               <span className="composer-hint">Ctrl+Enter to send</span>
               <ContextUsageRing usage={agentChat.contextUsage} />
-              {agentChat.busy ? <button className="send-button" onClick={() => void agentChat.stop()} title="Stop Agent; submitted generation jobs continue">Stop</button> : <button className="send-button" onClick={sendChatMessage} title="Send"><Icon name="send" size={14} /></button>}
+              {agentChat.busy ? <button className="send-button" onClick={() => void agentChat.stop()} title="Stop Agent; submitted generation jobs continue">Stop</button> : <button className="send-button" disabled={!agentChat.ready || !conversations.current || Boolean(conversations.current.archivedAt) || !chatInput.trim()} onClick={sendChatMessage} title="Send"><Icon name="send" size={14} /></button>}
             </div>
           </div>
         </aside>
@@ -1228,6 +1231,7 @@ export function App() {
             <label>Agent Base URL <input value={runtimeSettings.agentBaseUrl} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, agentBaseUrl: event.target.value })} /></label>
             <label>Agent API Key <input type="password" value={runtimeSettings.agentApiKey} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, agentApiKey: event.target.value })} /></label>
             <label>Agent Model <input value={runtimeSettings.agentModel} onChange={(event) => setRuntimeSettings({ ...runtimeSettings, agentModel: event.target.value })} /></label>
+            <RuntimeSettings projectPath={projectPath} />
             {settingsError && <div className="agent-error" role="alert">{settingsError}</div>}
             <div className="settings-actions">
               <button onClick={saveRuntimeSettings} disabled={settingsSaving}>{settingsSaving ? '保存中…' : '保存'}</button>

@@ -36,6 +36,8 @@ import { DaemonService } from './daemon';
 import { LocalIpcServer } from './ipc-server';
 import type { AgentSessionService } from '@canvas-cut/agent';
 import { createAgentService } from './agent-service';
+import { parseRuntimeConfig, publicRuntimeConfig, mergeRuntimeConfig, McpManager, SkillRegistry, recoverPatches } from '@canvas-cut/agent';
+import { homedir } from 'node:os';
 import { captureWindowScreenshot, UiScreenshotResult } from './ui-capture';
 
 let mainWindow: BrowserWindow | null = null;
@@ -74,7 +76,7 @@ async function readLocalRuntimeSettings(): Promise<Record<string, unknown>> {
   return data;
 }
 
-const SECRET_SETTINGS = ['arkApiKey', 'agentApiKey', 'tosAccessKeyId', 'tosAccessKeySecret'];
+const SECRET_SETTINGS = ['arkApiKey', 'agentApiKey', 'tosAccessKeyId', 'tosAccessKeySecret', 'agentRuntime'];
 
 async function writeLocalRuntimeSettings(data: Record<string, unknown>): Promise<void> {
   const stored = { ...data };
@@ -130,6 +132,28 @@ function createWindow(): BrowserWindow {
 function registerIpcHandlers(): void {
   ipcMain.handle('canvas-cut:invoke', async (_event, channel: string, payload: Record<string, unknown>) => {
     switch (channel) {
+      case 'agent.runtime.get': {
+        const settings = await readLocalRuntimeSettings();
+        const config = parseRuntimeConfig(JSON.parse(String(settings.agentRuntime ?? '{}')));
+        const skills = new SkillRegistry([join(app.getAppPath(), '..', '..', 'skills'), join(homedir(), '.canvas-cut', 'skills'), join(String(payload.path), 'skills')]);
+        let ptyAvailable = false;
+        try { require('node-pty'); ptyAvailable = true; } catch {}
+        return { config: publicRuntimeConfig(config), ptyAvailable, skills: (await skills.list()).map(s => ({ name: s.frontmatter.name, description: s.frontmatter.description, path: s.sourcePath })), diagnostics: skills.diagnostics };
+      }
+      case 'agent.runtime.set': {
+        const settings = await readLocalRuntimeSettings();
+        const config = mergeRuntimeConfig(payload.config, parseRuntimeConfig(JSON.parse(String(settings.agentRuntime ?? '{}'))));
+        settings.agentRuntime = JSON.stringify(config); await writeLocalRuntimeSettings(settings);
+        return { saved: true };
+      }
+      case 'agent.runtime.test': {
+        const settings = await readLocalRuntimeSettings();
+        const config = mergeRuntimeConfig(payload.config, parseRuntimeConfig(JSON.parse(String(settings.agentRuntime ?? '{}'))));
+        const manager = new McpManager(config.mcpServers ?? [], String(payload.path), join(app.getPath('userData'), 'agent', 'connection-tests'));
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 60000);
+        try { await manager.connect(controller.signal); return { servers: manager.diagnostics }; }
+        finally { clearTimeout(timer); await manager.close(); }
+      }
       case 'project.init':
         {
           const initStore = new ProjectStore(String(payload.path));
@@ -491,6 +515,12 @@ function registerIpcHandlers(): void {
         return agentService.getRun(String(payload.path), String(payload.conversationId ?? 'default'), Number(payload.after ?? 0));
       case 'agent.cancel':
         return agentService.cancel(String(payload.path), String(payload.conversationId ?? 'default'));
+      case 'agent.conversations.list':
+        return agentService.list(String(payload.path));
+      case 'agent.conversations.create':
+        return agentService.create(String(payload.path));
+      case 'agent.conversations.manage':
+        return agentService.manage(String(payload.path), String(payload.conversationId), String(payload.action), payload.title === undefined ? undefined : String(payload.title));
       case 'agent.history':
         return agentService.history(String(payload.path), String(payload.conversationId ?? 'default'));
       case 'agent.chat':
@@ -635,6 +665,7 @@ if (!gotLock) {
     }
     logger.info('Starting DaemonService...');
     daemon = new DaemonService();
+    for (const diagnostic of await recoverPatches(join(app.getPath('userData'), 'agent', 'patches'))) logger.warn(diagnostic);
     agentService = await createAgentService({ userDataDir: app.getPath('userData'), appRoot: app.getAppPath(), executable: process.execPath, settings: readLocalRuntimeSettings });
     logger.info('Starting IPC server...');
     ipcServer = new LocalIpcServer(

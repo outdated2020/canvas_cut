@@ -8,6 +8,8 @@ version: 1.0.0
 
 通过 exec_command 运行 `canvas-cut`。默认 cwd 为当前项目，也可在命令中显式加 `--project "项目绝对路径"`。业务编辑必须使用 CLI，不直接覆盖 project/config/canvases/timeline JSON 或任务数据库。辅助提示词、分镜和参数文件可以使用文件工具。
 
+辅助文件用 `write_file` 新建；默认不会覆盖已有文件。局部修改使用 `apply_patch`，先用 `read_file` 读完当前文件的所有分页。完整覆盖需指定 `mode: overwrite` 并传入读取结果中的 `expectedHash`。没有 `edit_file` 工具。
+
 先读取现状：
 
 ```text

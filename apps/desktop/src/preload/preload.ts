@@ -45,6 +45,12 @@ contextBridge.exposeInMainWorld('api', {
       'agent.get-run',
       'agent.cancel',
       'agent.history',
+      'agent.conversations.list',
+      'agent.conversations.create',
+      'agent.conversations.manage',
+      'agent.runtime.get',
+      'agent.runtime.set',
+      'agent.runtime.test',
       'config.get',
       'settings.get-runtime',
       'settings.set-runtime'
