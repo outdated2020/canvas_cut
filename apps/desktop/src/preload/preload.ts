@@ -1,6 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('api', {
+  onCanvasChanged(callback: (change: { projectPath: string; canvasId: string }) => void) {
+    const listener = (_event: Electron.IpcRendererEvent, change: { projectPath: string; canvasId: string }) => callback(change);
+    ipcRenderer.on('canvas-cut:canvas-changed', listener);
+    return () => ipcRenderer.removeListener('canvas-cut:canvas-changed', listener);
+  },
   invoke(channel: string, payload: Record<string, unknown> = {}) {
     const allowed = new Set([
       'project.init',

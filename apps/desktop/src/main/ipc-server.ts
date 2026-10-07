@@ -2,11 +2,12 @@ import { createServer, Server, Socket } from 'node:net';
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { toStructuredError } from '@canvas-cut/core';
+import { toStructuredError, CanvasOperations, isCanvasOperation, validateCanvasInput, type CanvasChanged } from '@canvas-cut/core';
 import { DaemonService } from './daemon';
 import { UiScreenshotResult } from './ui-capture';
 
 export interface IpcServerOptions {
+  canvasChanged?: CanvasChanged;
   agentRequest?: (method: string, projectPath: string, payload: Record<string, unknown>) => Promise<unknown>;
   userDataDir: string;
   instanceId?: string;
@@ -28,6 +29,7 @@ export class LocalIpcServer {
   readonly instanceId: string;
   readonly token: string;
   readonly endpoint: string;
+  private readonly canvases: CanvasOperations;
 
   constructor(
     private readonly options: IpcServerOptions,
@@ -37,6 +39,7 @@ export class LocalIpcServer {
       payload: Record<string, unknown>
     ) => Promise<unknown>
   ) {
+    this.canvases = new CanvasOperations(options.canvasChanged);
     this.instanceId = options.instanceId ?? randomUUID();
     this.token = randomUUID();
     this.endpoint =
@@ -94,6 +97,7 @@ export class LocalIpcServer {
   }
 
   private async handleConnection(socket: Socket): Promise<void> {
+    socket.on('error', () => undefined);
     let buffer = '';
     socket.setEncoding('utf8');
     socket.on('data', (chunk: string) => {
@@ -161,13 +165,20 @@ export class LocalIpcServer {
 
   private async dispatch(envelope: Envelope): Promise<unknown> {
     const projectPath = envelope.projectPath;
+    if (isCanvasOperation(envelope.method)) return this.canvases.call(envelope.method, projectPath, envelope.payload);
     switch (envelope.method) {
+      case 'canvas.render': {
+        if (!projectPath) throw new Error('projectPath is required for canvas.render');
+        validateCanvasInput(envelope.method, { ...envelope.payload, ...(envelope.idempotencyKey ? { idempotencyKey: envelope.idempotencyKey } : {}) });
+        return this.daemon.submitJob(projectPath, { type: 'canvas.render', canvasId: envelope.payload.canvasId, force: envelope.payload.force ?? false, nodeId: envelope.payload.nodeId }, envelope.idempotencyKey);
+      }
       case 'ping':
         return { pong: true, instanceId: this.instanceId };
       case 'job.submit':
         if (!projectPath) throw new Error('projectPath is required for job.submit');
         return this.daemon.submitJob(projectPath, envelope.payload, envelope.idempotencyKey);
       case 'job.status':
+        validateCanvasInput(envelope.method, envelope.payload);
         if (!projectPath) throw new Error('projectPath is required for job.status');
         return this.daemon.getJob(projectPath, String(envelope.payload.jobId ?? ''));
       case 'job.wait':
@@ -178,6 +189,7 @@ export class LocalIpcServer {
           Number(envelope.payload.timeoutMs ?? 1_800_000)
         );
       case 'job.cancel':
+        validateCanvasInput(envelope.method, envelope.payload);
         if (!projectPath) throw new Error('projectPath is required for job.cancel');
         return this.daemon.cancelJob(projectPath, String(envelope.payload.jobId ?? ''));
       case 'job.list':
@@ -222,6 +234,7 @@ export class LocalIpcServer {
       error: { code: string; message: string; retryable?: boolean } | null;
     }
   ): void {
+    if (socket.destroyed) return;
     socket.write(`${JSON.stringify({ protocolVersion: 1, ...body })}\n`);
   }
 }

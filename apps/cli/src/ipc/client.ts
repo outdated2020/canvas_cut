@@ -41,8 +41,10 @@ export function uiScreenshotFile(): string {
 export class LocalIpcClient {
   constructor(private readonly projectPath?: string, private readonly idempotencyKey?: string) {}
 
-  async request<T>(method: string, payload: unknown = {}, timeoutMs = 30_000): Promise<T> {
+  async request<T>(method: string, payload: unknown = {}, timeoutMs = 30_000, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
     const info = await this.readInstance();
+    signal?.throwIfAborted();
     if (!info) {
       throw new CanvasCutError(ERROR_CODES.DAEMON_UNAVAILABLE, 'Electron main process is not running');
     }
@@ -67,6 +69,7 @@ export class LocalIpcClient {
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
+          signal?.removeEventListener('abort', abort);
           socket.destroy();
           reject(
             new CanvasCutError(ERROR_CODES.IPC_TIMEOUT, `Local IPC request timed out: ${method}`, {
@@ -80,11 +83,17 @@ export class LocalIpcClient {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
         socket.destroy();
         if (error) reject(error);
       };
 
+      const abort = () => finish(new Error('Local IPC request cancelled; dispatched operations may have completed'));
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+
       socket.on('connect', () => {
+        if (settled) return;
         socket.write(`${JSON.stringify(request)}\n`);
       });
       socket.on('data', (chunk: string) => {

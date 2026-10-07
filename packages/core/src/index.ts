@@ -7,6 +7,8 @@ export * from './logger';
 export * from './fs/lock';
 export * from './project/project-store';
 export * from './canvas/registry';
+export * from './canvas/api';
+export * from './canvas/operations';
 export * from './canvas/graph';
 export * from './canvas/engine';
 export * from './cache/file-node-cache';

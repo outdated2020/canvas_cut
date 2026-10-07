@@ -2,6 +2,8 @@ import { createInterface } from 'node:readline';
 import { promises as fs } from 'node:fs';
 import { CliOptions } from '../args';
 import { LocalIpcClient, uiScreenshotFile } from '../ipc/client';
+import { CodeModeService, CODEMODE_TOOLS } from '@canvas-cut/codemode';
+import { canvasTools } from './canvas-tools';
 
 const SERVER_NAME = 'canvas-cut';
 const SERVER_VERSION = '0.1.0';
@@ -70,16 +72,26 @@ const TOOLS = [
 
 export async function runMcpServer(options: CliOptions): Promise<void> {
   const client = new LocalIpcClient(options.project);
+  const codeMode = new CodeModeService([...TOOLS.map(tool => ({
+    ...tool, name: tool.name!, execute: async (input: Record<string, unknown>, signal: AbortSignal) => {
+      signal.throwIfAborted();
+      return callTool(client, { name: tool.name, arguments: input }, options.project);
+    }
+  })), ...canvasTools(options.project)]);
+  const pending = new Map<string | number, AbortController>();
   const rl = createInterface({ input: process.stdin, terminal: false });
   rl.on('line', (line) => {
-    void handleLine(client, line, options.project).catch(() => undefined);
+    void handleLine(client, line, options.project, codeMode, pending).catch(() => undefined);
   });
   return new Promise<void>((resolve) => {
-    rl.on('close', () => resolve());
+    rl.on('close', () => {
+      for (const controller of pending.values()) controller.abort();
+      resolve();
+    });
   });
 }
 
-async function handleLine(client: LocalIpcClient, line: string, project?: string): Promise<void> {
+async function handleLine(client: LocalIpcClient, line: string, project: string | undefined, codeMode: CodeModeService, pending: Map<string | number, AbortController>): Promise<void> {
   const trimmed = line.trim();
   if (!trimmed) return;
   let message: JsonRpcMessage;
@@ -92,10 +104,20 @@ async function handleLine(client: LocalIpcClient, line: string, project?: string
   if (!message || typeof message !== 'object' || Array.isArray(message)) {
     send({ jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid request' } }); return;
   }
-  if (message.id === undefined || message.id === null) return;
+  if (message.id === undefined || message.id === null) {
+    if (message.method === 'notifications/cancelled') {
+      const requestId = message.params?.requestId;
+      if (typeof requestId === 'string' || typeof requestId === 'number') pending.get(requestId)?.abort();
+    }
+    return;
+  }
   const id = message.id;
+  if (pending.has(id)) {
+    send({ jsonrpc: '2.0', id, error: { code: -32600, message: 'Duplicate in-flight request id' } }); return;
+  }
+  const controller = new AbortController(); pending.set(id, controller);
   try {
-    const result = await dispatch(client, message.method ?? '', message.params ?? {}, project);
+    const result = await dispatch(client, message.method ?? '', message.params ?? {}, project, codeMode, controller.signal);
     send({ jsonrpc: '2.0', id, result });
   } catch (error) {
     send({
@@ -106,7 +128,7 @@ async function handleLine(client: LocalIpcClient, line: string, project?: string
         message: error instanceof Error ? error.message : String(error)
       }
     });
-  }
+  } finally { pending.delete(id); }
 }
 
 function send(body: unknown): void {
@@ -120,7 +142,7 @@ function send(body: unknown): void {
 async function dispatch(
   client: LocalIpcClient,
   method: string,
-  params: Record<string, unknown>, project?: string
+  params: Record<string, unknown>, project: string | undefined, codeMode: CodeModeService, signal: AbortSignal
 ): Promise<unknown> {
   switch (method) {
     case 'initialize':
@@ -133,8 +155,11 @@ async function dispatch(
     case 'ping':
       return {};
     case 'tools/list':
-      return { tools: TOOLS };
+      return { tools: [...TOOLS, ...CODEMODE_TOOLS] };
     case 'tools/call':
+      if (CODEMODE_TOOLS.some(tool => tool.name === params.name)) {
+        return codeMode.call(String(params.name), (params.arguments ?? {}) as Record<string, unknown>, signal);
+      }
       return callTool(client, params, project);
     default:
       throw new JsonRpcError(-32601, `Method not found: ${method}`);

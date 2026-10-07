@@ -10,12 +10,13 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "tsc -b",
-    "test": "tsc -b --force packages/core apps/cli packages/agent apps/desktop && node --test --test-timeout=30000 tests/*.test.mjs",
+    "test": "tsc -b --force packages/core apps/cli packages/agent apps/desktop && node --test --test-timeout=30000 tests/*.test.mjs packages/codemode/test/*.test.mjs",
     "start:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-desktop.ps1",
     "dev:desktop:app": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-desktop.ps1",
     "dev:desktop": "npm run dev --workspace @canvas-cut/desktop",
     "dev:cli": "npm run dev --workspace @canvas-cut/cli",
     "build:core": "npm run build --workspace @canvas-cut/core",
+    "test:codemode": "npm run test --workspace @canvas-cut/codemode",
     "build:cli": "npm run build --workspace @canvas-cut/cli",
     "build:agent": "npm run build --workspace @canvas-cut/agent",
     "build:desktop": "npm run build --workspace @canvas-cut/desktop"

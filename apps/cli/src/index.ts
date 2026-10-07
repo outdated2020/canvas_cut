@@ -128,7 +128,7 @@ function printUsage(): void {
       '  preset save|list|apply',
       '  manifest                     list commands and parameter schemas',
       '  asset list|import',
-      '  mcp                          start MCP stdio server (Agent conversation and UI screenshot tools)',
+      '  mcp                          start MCP stdio server (Agent, screenshot and Code Mode tools)',
       '',
       'Global options: --project <path> --json --dry-run --help',
       ''

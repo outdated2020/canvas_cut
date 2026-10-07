@@ -33,7 +33,15 @@ test('MCP stdio sends prompts into shared persisted desktop sessions and support
   const unpack=result=>JSON.parse(result.content[0].text);
   assert.ok((await rpc('initialize',{protocolVersion:'2024-11-05'})).result.capabilities.tools);
   const tools=(await rpc('tools/list')).result.tools.map(t=>t.name);
-  for(const name of ['ui_screenshot','agent_send_prompt','agent_get_run','agent_history','agent_cancel'])assert.ok(tools.includes(name));
+  for(const name of ['ui_screenshot','agent_send_prompt','agent_get_run','agent_history','agent_cancel','search_tools','execute'])assert.ok(tools.includes(name));
+  const discovered=unpack(await call('search_tools',{query:'agent_history'}));
+  assert.equal(discovered.tools[0].name,'agent_history');
+  assert.match(discovered.tools[0].declaration,/tools.agent_history/);
+  assert.equal(unpack(await call('execute',{code:'return 2 + 3'})).result,5);
+  const cancelId=nextId+1;
+  const waiting=rpc('tools/call',{name:'execute',arguments:{code:'await new Promise(() => {})'}});
+  child.stdin.write(JSON.stringify({jsonrpc:'2.0',method:'notifications/cancelled',params:{requestId:cancelId,reason:'test cancellation'}})+'\n');
+  const cancelled=(await waiting).result;assert.equal(cancelled.isError,true);assert.match(cancelled.content[0].text,/cancelled/);
   assert.equal((await call('agent_send_prompt',{prompt:' '})).isError,true);
   assert.equal((await call('agent_get_run',{after:-1})).isError,true);
   const start=unpack(await call('agent_send_prompt',{prompt:'外部发送的 prompt'}));assert.ok(start.runId);
@@ -42,6 +50,8 @@ test('MCP stdio sends prompts into shared persisted desktop sessions and support
   const status=unpack(await call('agent_get_run'));assert.equal(status.run.id,start.runId);assert.equal(status.run.status,'running');
   const other=unpack(await call('agent_history',{conversationId:'other'}));assert.equal(other.messages.length,0);
   const history=unpack(await call('agent_history'));assert.equal(history.messages[0].content,'外部发送的 prompt');
+  const combined=unpack(await call('execute',{code:'const results = await Promise.all([tools.agent_history({}), tools.agent_get_run({})]); return results.map(r => JSON.parse(r.content[0].text));'}));
+  assert.equal(combined.calls,2);assert.equal(combined.result[0].messages[0].content,'外部发送的 prompt');assert.equal(combined.result[1].run.id,start.runId);
   assert.equal(unpack(await call('agent_cancel')).cancelled,true);
   await service.shutdown();
   assert.equal(unpack(await call('agent_get_run',{after:status.cursor})).run.status,'cancelled');

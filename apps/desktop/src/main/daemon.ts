@@ -11,6 +11,7 @@ import {
 } from '@canvas-cut/core';
 import { JobStore, JsonFileJobStore, SqliteJobStore } from './job-store';
 import { JobWorker } from './job-worker';
+import { notifyCanvasChanged, type CanvasChanged } from '@canvas-cut/core';
 
 interface ProjectContext {
   store: ProjectStore;
@@ -26,6 +27,7 @@ export interface SubmitResult {
 }
 
 export class DaemonService {
+  constructor(private readonly canvasChanged?: CanvasChanged) {}
   private readonly contexts = new Map<string, ProjectContext>();
   private readonly openingContexts = new Map<string, Promise<ProjectContext>>();
   private readonly submissions = new Map<string, Promise<unknown>>();
@@ -47,7 +49,7 @@ export class DaemonService {
     const store = new ProjectStore(projectPath);
     await store.requireOpen();
     const jobStore = this.createJobStore(store);
-    const worker = new JobWorker(store, jobStore);
+    const worker = new JobWorker(store, jobStore, { onCanvasChanged: this.canvasChanged });
     worker.start();
     const context = {
       store,
@@ -78,7 +80,11 @@ export class DaemonService {
     const previous = this.submissions.get(key) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(() => this.submitJobSerial(projectPath, payload, idempotencyKey));
     this.submissions.set(key, next);
-    try { return await next; }
+    try {
+      const result = await next;
+      if (payload.type === 'canvas.render' && payload.canvasId) notifyCanvasChanged(this.canvasChanged, { projectPath: absolute, canvasId: String(payload.canvasId) });
+      return result;
+    }
     finally { if (this.submissions.get(key) === next) this.submissions.delete(key); }
   }
 
@@ -221,6 +227,7 @@ export class DaemonService {
       context.jobStore.update(child.id, { status: 'cancelled', updated_at: Date.now() });
     }
     await context.worker.cancel(jobId);
+    if (job.canvas_id) notifyCanvasChanged(this.canvasChanged, { projectPath: context.store.paths.root, canvasId: job.canvas_id });
     return { cancelled: true };
   }
 

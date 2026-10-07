@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { reconcileCanvasNodes } from './canvas-sync';
 import ReactFlow, {
   addEdge,
   Background,
@@ -264,6 +265,7 @@ export function CanvasGraphView({
 }: CanvasGraphViewProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+  const displayedCanvas = useRef(canvas.id);
 
   const layout = useMemo(
     () => layoutNodes(canvas, config, onUpdateNodeParams, assets ?? [], canvases ?? []),
@@ -272,8 +274,10 @@ export function CanvasGraphView({
   const edgeLayout = useMemo(() => layoutEdges(canvas), [canvas]);
 
   useEffect(() => {
-    setNodes(layout);
-    setEdges(edgeLayout);
+    const sameCanvas = displayedCanvas.current === canvas.id;
+    displayedCanvas.current = canvas.id;
+    setNodes(previous => sameCanvas ? reconcileCanvasNodes(previous, layout) : layout);
+    setEdges(previous => edgeLayout.map((edge: Edge) => ({ ...edge, selected: sameCanvas ? previous.find(old => old.id === edge.id)?.selected : undefined })));
   }, [layout, edgeLayout, setNodes, setEdges]);
 
   function isValidConnection(connection: Connection): boolean {

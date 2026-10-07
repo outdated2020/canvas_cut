@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@canvas-cut/codemode": "0.1.0",
     "@canvas-cut/core": "0.1.0"
   },
   "devDependencies": {

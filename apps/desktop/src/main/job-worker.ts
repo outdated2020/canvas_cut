@@ -29,11 +29,13 @@ import {
   resolveCanvasClipsInTimeline,
   JobRecord
 } from '@canvas-cut/core';
+import { notifyCanvasChanged, type CanvasChanged } from '@canvas-cut/core';
 import type { JobStore } from './job-store';
 import { logger } from '@canvas-cut/core';
 import { TosUploader } from './uploader';
 
 interface WorkerOptions {
+  onCanvasChanged?: CanvasChanged;
   pollIntervalMs?: number;
   ffmpegPath?: string;
   maxConcurrency?: number;
@@ -163,6 +165,7 @@ export class JobWorker {
     } finally {
       this.controllers.delete(job.id);
       this.remoteTasks.delete(job.id);
+      if (job.canvas_id) notifyCanvasChanged(this.options.onCanvasChanged, { projectPath: this.store.paths.root, canvasId: job.canvas_id });
     }
   }
 
@@ -375,6 +378,7 @@ export class JobWorker {
         outputNode.status = 'succeeded';
       }
       await this.store.writeCanvas(latest);
+      notifyCanvasChanged(this.options.onCanvasChanged, { projectPath: this.store.paths.root, canvasId });
     });
 
     return execution.output;

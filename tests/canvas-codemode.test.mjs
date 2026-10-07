@@ -1,0 +1,123 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import Ajv from 'ajv';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import core from '../packages/core/dist/index.js';
+import ipcModule from '../apps/desktop/dist/main/ipc-server.js';
+import daemonModule from '../apps/desktop/dist/main/daemon.js';
+import workerModule from '../apps/desktop/dist/main/job-worker.js';
+import jobsModule from '../apps/desktop/dist/main/job-store.js';
+import mode from '../packages/codemode/dist/index.js';
+import toolModule from '../apps/cli/dist/mcp/canvas-tools.js';
+import clientModule from '../apps/cli/dist/ipc/client.js';
+
+test('real MCP code discovers and builds a canvas, edits it, generates through IPC and cancels jobs', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'canvas-code-'));
+  const store = new core.ProjectStore(dir); await store.init('Code Mode');
+  const second = join(dir, 'second'); await new core.ProjectStore(second).init('Second');
+  const changes = [], notify = change => changes.push(change);
+  const jobStore = new jobsModule.InMemoryJobStore();
+  const worker = new workerModule.JobWorker(store, jobStore, { pollIntervalMs: 20, onCanvasChanged: notify });
+  const asset = { id: 'image', type: 'image', path: join(dir, 'assets', 'mock.png'), sizeBytes: 1 };
+  await writeFile(asset.path, 'x');
+  let generations = 0, prompt;
+  worker.createProvider = async () => ({ textToImage: async request => { generations++; prompt = request.prompt; return { jobId: 'provider', status: 'succeeded', result: asset }; } });
+  const context = { store, jobStore, worker, activeCanvasRenders: new Map() };
+  const daemon = new daemonModule.DaemonService(notify); daemon.getContext = async () => context;
+  const server = new ipcModule.LocalIpcServer({ userDataDir: join(dir, 'canvas-cut'), canvasChanged: notify }, daemon);
+  const client = new Client({ name: 'canvas-code-test', version: '1' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve('apps/cli/dist/index.js'), 'mcp', '--project', dir], env: { APPDATA: dir }, stderr: 'pipe' });
+  transport.stderr?.on('data', () => undefined);
+  t.after(async () => { worker.stop(); await client.close(); await server.stop(); await rm(dir, { recursive: true, force: true, maxRetries: 3 }); });
+  await server.start(); await client.connect(transport);
+  const call = (name, args) => client.callTool({ name, arguments: args });
+  const run = async code => {
+    const response = await call('execute', { code });
+    assert.equal(response.isError, undefined, response.content[0].text);
+    return JSON.parse(response.content[0].text);
+  };
+  const advertised = (await client.listTools()).tools.map(tool => tool.name);
+  assert.equal(advertised.length, 7); assert.equal(advertised.includes('canvas_create'), false);
+  const found = JSON.parse((await call('search_tools', { query: 'canvas_node_add' })).content[0].text).tools[0];
+  assert.ok(found.outputSchema.properties.nodeId); assert.match(found.declaration, /structuredContent.*nodeId/);
+  const catalog = (await run('return (await tools.canvas_node_types({})).structuredContent;')).result;
+  assert.ok(catalog.types.find(type => type.type === 'text-to-image').inputs.some(port => port.id === 'text'));
+  const flow = await run(`
+    const data = r => r.structuredContent;
+    const canvas = data(await tools.canvas_create({}));
+    const input = data(await tools.canvas_node_add({canvasId: canvas.canvasId, type: 'text-input', params: {text:'initial'}}));
+    const gen = data(await tools.canvas_node_add({canvasId: canvas.canvasId, type: 'text-to-image'}));
+    const output = data(await tools.canvas_node_add({canvasId: canvas.canvasId, type: 'output'}));
+    await tools.canvas_edge_connect({canvasId:canvas.canvasId,source:input.nodeId,sourcePort:'text',target:gen.nodeId,targetPort:'text'});
+    await tools.canvas_edge_connect({canvasId:canvas.canvasId,source:gen.nodeId,sourcePort:'image',target:output.nodeId,targetPort:'image'});
+    await tools.canvas_node_set_params({canvasId:canvas.canvasId,nodeId:input.nodeId,params:{text:'山间日出'}});
+    const job = data(await tools.canvas_render({canvasId:canvas.canvasId,idempotencyKey:'stable-code-render'}));
+    const retry = data(await tools.canvas_render({canvasId:canvas.canvasId,idempotencyKey:'stable-code-render'}));
+    return {canvasId:canvas.canvasId,nodeId:input.nodeId,jobId:job.jobId,retried:retry.jobId};
+  `);
+  assert.equal(flow.calls, 9); assert.equal(flow.result.jobId, flow.result.retried);
+  const { canvasId, jobId } = flow.result;
+  worker.start();
+  let status;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    status = (await run(`return (await tools.job_status({jobId:${JSON.stringify(jobId)}})).structuredContent;`)).result;
+    if (status.status !== 'pending' && status.status !== 'running') break;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+  assert.equal(status.status, 'succeeded'); assert.equal(generations, 1); assert.equal(prompt, '山间日出'); worker.stop();
+  const graph = (await run(`return (await tools.canvas_get({canvasId:${JSON.stringify(canvasId)}})).structuredContent;`)).result;
+  assert.equal(graph.nodes.find(node => node.type === 'output').cachedResult.id, asset.id);
+  const ajv = new Ajv({ strict: false });
+  assert.equal(ajv.compile(core.CANVAS_API.find(api => api.name === 'canvas_get').outputSchema)(graph), true);
+  assert.equal(ajv.compile(core.CANVAS_API.find(api => api.name === 'job_status').outputSchema)(status), true);
+  assert.ok(changes.filter(change => change.canvasId === canvasId).length >= 9);
+  const cancellation = (await run(`
+    const job = (await tools.canvas_render({canvasId:${JSON.stringify(canvasId)},force:true,idempotencyKey:'cancel-code-render'})).structuredContent;
+    const response = (await tools.job_cancel({jobId:job.jobId})).structuredContent;
+    return {response,status:(await tools.job_status({jobId:job.jobId})).structuredContent.status};
+  `)).result;
+  assert.equal(cancellation.response.cancelled, true); assert.equal(cancellation.status, 'cancelled');
+  const others = (await run(`return (await tools.canvas_create({projectPath:${JSON.stringify(second)}})).structuredContent;`)).result;
+  assert.equal((await new core.ProjectStore(second).readCanvas(others.canvasId)).id, others.canvasId);
+  assert.ok(changes.some(change => change.projectPath === second));
+  const partial = await call('execute', { code: 'globalThis.created = (await tools.canvas_create({})).structuredContent; await tools.canvas_node_add({canvasId:created.canvasId,type:"invented"});' });
+  assert.equal(partial.isError, true);
+  assert.equal((await store.listCanvasFiles()).length, 2);
+  const empty = (await call('execute', { code: 'const list = (await tools.canvas_list({})).structuredContent.canvases; const c = list.find(c => c.nodeCount === 0); return (await tools.canvas_render({canvasId:c.canvasId})).structuredContent;' }));
+  assert.equal(empty.isError, true); assert.equal(generations, 1);
+  const invalid = await call('execute', { code: `await tools.canvas_node_set_params({canvasId:${JSON.stringify(canvasId)},nodeId:${JSON.stringify(flow.result.nodeId)},params:{text:10}});` });
+  assert.equal(invalid.isError, true); assert.equal((await store.readCanvas(canvasId)).nodes.find(node => node.type === 'text-input').params.text, '山间日出');
+});
+
+test('missing project and unavailable desktop fail clearly without falling back to file mutation', async t => {
+  const service = new mode.CodeModeService(toolModule.canvasTools());
+  const response = await service.call('execute', { code: 'return await tools.canvas_create({});' }, new AbortController().signal);
+  assert.equal(response.isError, true); assert.match(response.content[0].text, /Specify projectPath/);
+  const dir = await mkdtemp(join(tmpdir(), 'canvas-offline-'));
+  const previous = process.env.APPDATA; process.env.APPDATA = dir;
+  t.after(async () => { if (previous === undefined) delete process.env.APPDATA; else process.env.APPDATA = previous; await rm(dir, { recursive: true, force: true }); });
+  const offline = await new mode.CodeModeService(toolModule.canvasTools(dir)).call('execute', { code: 'return await tools.canvas_create({});' }, new AbortController().signal);
+  assert.equal(offline.isError, true); assert.match(offline.content[0].text, /not running/);
+  assert.deepEqual(await new core.ProjectStore(dir).listCanvasFiles(), []);
+});
+
+test('IPC cancellation closes an in-flight bridge without cancelling dispatched operations', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'canvas-ipc-cancel-'));
+  const previous = process.env.APPDATA; process.env.APPDATA = dir;
+  let began, finish;
+  const started = new Promise(resolve => { began = resolve; });
+  const server = new ipcModule.LocalIpcServer({ userDataDir: join(dir, 'canvas-cut'), agentRequest: async () => {
+    began(); return new Promise(resolve => { finish = resolve; });
+  } }, {});
+  t.after(async () => { if (previous === undefined) delete process.env.APPDATA; else process.env.APPDATA = previous; await server.stop(); await rm(dir, { recursive: true, force: true }); });
+  await server.start();
+  const controller = new AbortController();
+  const pending = new clientModule.LocalIpcClient(dir).request('agent.history', {}, 30000, controller.signal);
+  await started; controller.abort();
+  await assert.rejects(pending, /cancelled/);
+  finish({ committed: true });
+});

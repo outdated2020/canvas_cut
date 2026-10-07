@@ -11,11 +11,13 @@ import { CanvasGraphView } from './CanvasGraphView';
 import { TimelineView } from './TimelineView';
 import { Icon } from './icons';
 import type { TimelineFile, Track, Clip } from '@canvas-cut/core';
+import { createCanvasRefreshCoordinator, projectKey, type CanvasChangeNotification } from './canvas-sync';
 
 declare global {
   interface Window {
     api: {
       invoke(channel: string, payload?: Record<string, unknown>): Promise<unknown>;
+      onCanvasChanged(callback: (change: CanvasChangeNotification) => void): () => void;
     };
   }
 }
@@ -99,6 +101,25 @@ export function App() {
   const agentChat = useAgentChat(projectPath, conversations.selected, async () => { await Promise.all([refreshSidebar(), refreshTimeline(), refreshCanvas().catch(() => setCanvas(null))]); }, () => setAiView('chat'));
   const { messages: chatMessages, setMessages: setChatMessages } = agentChat;
   const [canvas, setCanvas] = useState<AnyRecord | null>(null);
+  const viewIdentity = useRef({ key: '', projectPath, canvasId: null as string | null, epoch: 0 });
+  const viewProjectPath = project?.path ?? projectPath;
+  const viewKey = JSON.stringify([projectKey(viewProjectPath), canvas?.id ?? null]);
+  if (viewIdentity.current.key !== viewKey) viewIdentity.current = { key: viewKey, projectPath: viewProjectPath, canvasId: canvas?.id ?? null, epoch: viewIdentity.current.epoch + 1 };
+  const canvasReadRevision = useRef(0);
+  const projectInput = useRef(projectPath); projectInput.current = projectPath;
+
+  useEffect(() => {
+    const refresh = createCanvasRefreshCoordinator({
+      target: () => viewIdentity.current,
+      loadSidebar: readSidebar,
+      loadCanvas: async (path, id) => await invoke('canvas.get', { path, canvasId: id }) as AnyRecord,
+      applySidebar,
+      applyCanvas: data => setCanvas(data),
+      onError: error => addLog(`Canvas refresh failed: ${String(error)}`)
+    });
+    const unsubscribe = window.api.onCanvasChanged(refresh.receive);
+    return () => { unsubscribe(); refresh.dispose(); };
+  }, []);
   const [deletingCanvas, setDeletingCanvas] = useState<string | null>(null);
   const [canvasDeleteError, setCanvasDeleteError] = useState('');
   const [centerColWidth, setCenterColWidth] = useState(42); // percentage of workspace width
@@ -167,6 +188,8 @@ export function App() {
   async function openProject(): Promise<AnyRecord | null> {
     try {
       const result = (await invoke('project.open', { path: projectPath })) as AnyRecord;
+      if (projectInput.current !== projectPath) return null;
+      if (project && projectKey(project.path) !== projectKey(result.path)) { canvasReadRevision.current++; setCanvas(null); }
       setProject(result);
       setTimeline(result.timeline);
       const cfg = await invoke('config.get', { path: projectPath }) as AnyRecord;
@@ -187,17 +210,24 @@ export function App() {
     return initProject();
   }
 
-  async function refreshSidebar() {
+  async function readSidebar(path: string) {
     const [canvasList, assetList, presetList, jobList] = await Promise.all([
-      invoke('canvas.list', { path: projectPath }).catch(() => []),
-      invoke('asset.list', { path: projectPath }).catch(() => []),
-      invoke('preset.list', { path: projectPath }).catch(() => []),
-      invoke('job.list', { path: projectPath }).catch(() => [])
+      invoke('canvas.list', { path }).catch(() => []),
+      invoke('asset.list', { path }).catch(() => []),
+      invoke('preset.list', { path }).catch(() => []),
+      invoke('job.list', { path }).catch(() => [])
     ]);
+    return { canvasList, assetList, presetList, jobList };
+  }
+  function applySidebar({ canvasList, assetList, presetList, jobList }: Awaited<ReturnType<typeof readSidebar>>) {
     setCanvases(canvasList as AnyRecord[]);
     setAssets(assetList as AnyRecord[]);
     setPresets(presetList as AnyRecord[]);
     setJobs(jobList as AnyRecord[]);
+  }
+  async function refreshSidebar() {
+    const data = await readSidebar(projectPath);
+    if (projectInput.current === projectPath) applySidebar(data);
   }
 
   function useTemplatePrompt(prompt: string) {
@@ -396,10 +426,14 @@ export function App() {
   }async function refreshCanvas(canvasId?: string) {
     const currentCanvasId = canvasId ?? canvas?.id;
     if (!currentCanvasId) return;
+    const revision = ++canvasReadRevision.current;
+    const epoch = viewIdentity.current.epoch;
     const updated = (await invoke('canvas.get', {
       path: projectPath,
       canvasId: currentCanvasId
     })) as AnyRecord;
+    if (canvasReadRevision.current !== revision || projectInput.current !== projectPath) return;
+    if (viewIdentity.current.epoch !== epoch) return;
     setCanvas(updated);
   }
 

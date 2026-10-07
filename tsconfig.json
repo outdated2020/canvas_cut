@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/codemode" },
     { "path": "./packages/core" },
     { "path": "./packages/agent" },
     { "path": "./apps/cli" },

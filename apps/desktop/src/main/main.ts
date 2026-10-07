@@ -7,11 +7,9 @@ import {
   addSubtitleClip,
   addTrack,
   atomicWriteJson,
-  connectEdge,
   computeGraphHash,
   createCanvas,
   createNode,
-  disconnectEdge,
   moveClip,
   removeClip,
   removeTrack,
@@ -24,10 +22,9 @@ import {
   addTransition,
   removeTransition,
   ProjectStore,
-  addNode,
-  removeNode,
-  setNodeParams,
-  NodeType,
+  CanvasOperations,
+  isCanvasOperation,
+  type CanvasChange,
   withProjectLock,
   logger
 } from '@canvas-cut/core';
@@ -44,6 +41,10 @@ let mainWindow: BrowserWindow | null = null;
 let daemon: DaemonService;
 let ipcServer: LocalIpcServer;
 let agentService: AgentSessionService;
+function canvasChanged(change: CanvasChange) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('canvas-cut:canvas-changed', change);
+}
+const canvasOperations = new CanvasOperations(canvasChanged);
 
 function inferAssetType(name: string): 'image' | 'video' | 'audio' {
   const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
@@ -131,6 +132,16 @@ function createWindow(): BrowserWindow {
 
 function registerIpcHandlers(): void {
   ipcMain.handle('canvas-cut:invoke', async (_event, channel: string, payload: Record<string, unknown>) => {
+    if (isCanvasOperation(channel)) {
+      const { path, name: _legacyName, ...input } = payload;
+      const data = await canvasOperations.call(channel, path as string, input);
+      // Retain the renderer's existing return shapes while sharing operations.
+      if (channel === 'canvas.create') return data.canvas;
+      if (channel === 'canvas.list') return data.canvases;
+      if (channel === 'canvas.node.add' || channel === 'canvas.node.set-param') return data.node;
+      if (channel === 'canvas.edge.connect') return data.edge;
+      return data;
+    }
     switch (channel) {
       case 'agent.runtime.get': {
         const settings = await readLocalRuntimeSettings();
@@ -184,14 +195,6 @@ function registerIpcHandlers(): void {
         await store.requireOpen();
         return store.readConfig();
       }
-      case 'canvas.create':
-        return withLockedProject(String(payload.path), async (store) => {
-          await store.requireOpen();
-          const id = randomUUID();
-          const canvas = createCanvas(id, String(payload.name ?? 'Canvas'));
-          await store.writeCanvas(canvas);
-          return canvas;
-        });
       case 'canvas.remove': {
         const canvasId = String(payload.canvasId);
         const options: Electron.MessageBoxOptions = {
@@ -209,28 +212,6 @@ function registerIpcHandlers(): void {
           await store.removeCanvas(canvasId);
           return { removed: true };
         });
-      }
-      case 'canvas.get': {
-        const store = new ProjectStore(String(payload.path));
-        await store.requireOpen();
-        return store.readCanvas(String(payload.canvasId));
-      }
-      case 'canvas.list': {
-        const store = new ProjectStore(String(payload.path));
-        await store.requireOpen();
-        const files = await store.listCanvasFiles();
-        const canvases = [];
-        for (const file of files) {
-          const id = file.replace(/\.json$/, '');
-          const graph = await store.readCanvas(id);
-          canvases.push({
-            id: graph.id,
-            version: graph.version,
-            graphHash: graph.graphHash,
-            nodeCount: graph.nodes.length
-          });
-        }
-        return canvases;
       }
       case 'asset.list': {
         const store = new ProjectStore(String(payload.path));
@@ -285,52 +266,6 @@ function registerIpcHandlers(): void {
           canvas.graphHash = computeGraphHash(canvas);
           await store.writeCanvas(canvas);
           return canvas;
-        });
-      case 'canvas.node.add':
-        return withLockedProject(String(payload.path), async (store) => {
-          await store.requireOpen();
-          const graph = await store.readCanvas(String(payload.canvasId));
-          const node = addNode(graph, String(payload.type) as NodeType, (payload.params as Record<string, unknown>) ?? {});
-          await store.writeCanvas(graph);
-          return node;
-        });
-      case 'canvas.node.remove':
-        return withLockedProject(String(payload.path), async (store) => {
-          await store.requireOpen();
-          const graph = await store.readCanvas(String(payload.canvasId));
-          removeNode(graph, String(payload.nodeId));
-          await store.writeCanvas(graph);
-          return { removed: payload.nodeId };
-        });
-      case 'canvas.node.set-param':
-        return withLockedProject(String(payload.path), async (store) => {
-          await store.requireOpen();
-          const graph = await store.readCanvas(String(payload.canvasId));
-          const node = setNodeParams(graph, String(payload.nodeId), (payload.params as Record<string, unknown>) ?? {});
-          await store.writeCanvas(graph);
-          return node;
-        });
-      case 'canvas.edge.connect':
-        return withLockedProject(String(payload.path), async (store) => {
-          await store.requireOpen();
-          const graph = await store.readCanvas(String(payload.canvasId));
-          const edge = connectEdge(
-            graph,
-            String(payload.source),
-            String(payload.sourcePort),
-            String(payload.target),
-            String(payload.targetPort)
-          );
-          await store.writeCanvas(graph);
-          return edge;
-        });
-      case 'canvas.edge.remove':
-        return withLockedProject(String(payload.path), async (store) => {
-          await store.requireOpen();
-          const graph = await store.readCanvas(String(payload.canvasId));
-          disconnectEdge(graph, String(payload.edgeId));
-          await store.writeCanvas(graph);
-          return { removed: payload.edgeId };
         });
       case 'canvas.render':
         logger.info('canvas.render requested: canvasId=' + payload.canvasId + ' force=' + payload.force);
@@ -664,12 +599,12 @@ if (!gotLock) {
       process.env.FFMPEG_PATH = localSettings.ffmpegPath;
     }
     logger.info('Starting DaemonService...');
-    daemon = new DaemonService();
+    daemon = new DaemonService(canvasChanged);
     for (const diagnostic of await recoverPatches(join(app.getPath('userData'), 'agent', 'patches'))) logger.warn(diagnostic);
     agentService = await createAgentService({ userDataDir: app.getPath('userData'), appRoot: app.getAppPath(), executable: process.execPath, settings: readLocalRuntimeSettings });
     logger.info('Starting IPC server...');
     ipcServer = new LocalIpcServer(
-      { userDataDir: app.getPath('userData'), captureUi: captureMainWindow,
+      { userDataDir: app.getPath('userData'), captureUi: captureMainWindow, canvasChanged,
         agentRequest: async (method, projectPath, payload) => {
           const conversation = typeof payload.conversationId === 'string' ? payload.conversationId : 'default';
           switch (method) {
