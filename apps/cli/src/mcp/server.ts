@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline';
 import { promises as fs } from 'node:fs';
 import { CliOptions } from '../args';
 import { LocalIpcClient, uiScreenshotFile } from '../ipc/client';
-import { CodeModeService, CODEMODE_TOOLS } from '@canvas-cut/codemode';
+import { CodeModeService, CODEMODE_TOOLS, CODEMODE_INSTRUCTIONS } from '@canvas-cut/codemode';
 import { canvasTools } from './canvas-tools';
 
 const SERVER_NAME = 'canvas-cut';
@@ -150,6 +150,7 @@ async function dispatch(
         protocolVersion:
           typeof params.protocolVersion === 'string' ? params.protocolVersion : DEFAULT_PROTOCOL_VERSION,
         capabilities: { tools: {} },
+        instructions: CODEMODE_INSTRUCTIONS,
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION }
       };
     case 'ping':

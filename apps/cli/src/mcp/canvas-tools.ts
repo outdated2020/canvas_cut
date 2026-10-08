@@ -7,7 +7,7 @@ export function canvasTools(defaultProject?: string): ToolDefinition[] {
     name: api.name, description: api.description, outputSchema: api.outputSchema,
     inputSchema: { ...api.inputSchema, properties: {
       ...api.inputSchema.properties as Record<string, unknown>,
-      projectPath: { type: 'string', minLength: 1, description: 'Project directory. Defaults to the MCP --project argument.' }
+      projectPath: { type: 'string', minLength: 1, description: 'Absolute initialized project directory. Defaults to the MCP --project argument, not whichever project is currently open in the desktop. Requires a running desktop service; creating a canvas does not switch the desktop to it.' }
     } },
     execute: async (input, signal) => {
       signal.throwIfAborted();

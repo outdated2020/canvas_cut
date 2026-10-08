@@ -80,6 +80,19 @@ node apps/cli/dist/index.js --help
 
 沿用上述 MCP 启动配置，无需另外启动服务。先调用 `search_tools({"query":"agent"})` 发现工具；空 query 列出全部可编排工具。搜索按名称和描述匹配，空格分隔的词必须全部匹配。返回的 `nextOffset` 用于继续分页。
 
+`initialize` 的 `instructions`、工具描述和参数 Schema 都包含使用约束。`canvas_*` / `job_*` 是内部方法，只能在 `execute` 中调用 `tools.<方法名>`，不能把它们作为顶层 MCP `tools/call` 的名称。原生画布操作无需调用 `agent_send_prompt` 启动另一轮 Agent 对话。修改描述并重新构建后，客户端需要重连 MCP；已经缓存的旧工具描述不会自动更新。
+
+stdio 使用 **UTF-8、无 BOM、每行一个 JSON-RPC 消息**。优先使用 MCP SDK 的 stdio transport。手写 PowerShell/.NET 客户端时，必须在启动子进程前显式设置重定向流编码；仅设置控制台编码或 `$OutputEncoding` 不会设置 `Process.StandardInput` 的编码：
+
+```powershell
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+$startInfo.StandardInputEncoding = $utf8
+$startInfo.StandardOutputEncoding = $utf8
+$startInfo.StandardErrorEncoding = $utf8
+```
+
+曾发生默认 `ibm437` 把中文在进入 MCP 前替换为 `?` 的问题。服务无法恢复已经丢失的字符；提交生成前先用 `canvas_get` 重读提示词并与原文比较，不要仅凭请求代码判断中文传输正确。
+
 再调用 `execute({"code":"..."})`。code 是异步函数体，直接写 JavaScript，支持顶层 await、return、循环、Promise.all 和 try/catch；TypeScript 类型只是调用提示，不接受 TypeScript 语法。例：
 
 ```javascript
@@ -93,6 +106,8 @@ return { messages: history.messages, run: status.run };
 ```
 
 `execute` 的 text 内容是 JSON：`{result, logs, calls}`，只把脚本返回值、console.log 和调用次数交给模型。`tools.*` 保留原 MCP 返回格式；工具 isError 转成可捕获的异常。截图的图片仍在 content 中，以 base64 返回，较大图片可能触及结果限制；需要直接显示图片时使用原 `ui_screenshot` 工具。
+
+注意两层返回值：脚本内部通过 `r.structuredContent` 读取画布/任务数据；客户端收到的 `execute` 响应通过 `JSON.parse(response.content[0].text).result` 取得脚本返回值，先检查 `response.isError` 再解析。每次执行的变量都会清空，后续调用所需的 `canvasId` / `nodeId` / `jobId` 必须由客户端保存并再次传入代码。
 
 执行器位于 `packages/codemode`，采用独立 Worker 中的 QuickJS/WASM。每次执行新建运行时，不提供 process、require、fetch、文件、模块或定时器能力，只能通过注册工具访问宿主。默认限制：30 秒、32 MiB QuickJS 堆、32 次工具调用、1 MiB 输出、64 KiB 代码、最多 4 个并发执行；日志最多 64 KiB，上游返回数据累计最多 4 MiB。工具参数在宿主再次按 JSON Schema 验证。
 
@@ -117,7 +132,7 @@ MCP `notifications/cancelled` 与 stdin 关闭会终止代码执行。已经提�
 | `canvas_render` | `canvasId`、可选 `nodeId` / `force` / `idempotencyKey`；提交生成，立即返回 `jobId` |
 | `job_status` / `job_cancel` | `jobId`；查询或取消生成任务 |
 
-这些方法支持可选 `projectPath`，默认取 MCP `--project`；`canvas_node_types` 不需要项目。结果同时放在 `structuredContent` 和 JSON text 中，推荐读取 `structuredContent`。搜索结果提供输入、输出 Schema 及返回类型提示。编辑和生成结果写回会自动刷新对应项目的桌面列表和当前画布，保留节点位置、选择和视图；不会自动打开新画布。
+这些方法支持可选绝对路径 `projectPath`，默认取 MCP `--project`，不随桌面当前项目切换；`canvas_node_types` 不需要项目。结果同时放在 `structuredContent` 和 JSON text 中，推荐读取 `structuredContent`。搜索结果提供输入、输出 Schema 及返回类型提示。编辑和生成结果写回会自动刷新对应项目的桌面列表和当前画布，保留节点位置、选择和视图；不会自动打开新画布。
 
 先读取 `(await tools.canvas_node_types({})).structuredContent`，再提交以下异步函数体给 `execute`，创建并生成一张图片：
 
@@ -139,12 +154,48 @@ await tools.canvas_node_set_params({
   canvasId, nodeId: input.nodeId, params: { text: '山间日出，薄雾缓慢流动' }
 });
 const job = data(await tools.canvas_render({ canvasId, idempotencyKey: `first-render-${canvasId}` }));
-return { canvasId, inputNodeId: input.nodeId, jobId: job.jobId };
+return { canvasId, inputNodeId: input.nodeId, imageNodeId: gen.nodeId, outputNodeId: output.nodeId, jobId: job.jobId };
 ```
 
 在后续 `execute` 中写 `return (await tools.job_status({jobId: '上一步的 jobId'})).structuredContent;` 查询结果；不要在同一脚本里长时间轮询。需要生成视频时，把生成节点改为 `text-to-video`，参数使用 `durationMs`，连接生成节点与 output 的 `video` 端口。生成会调用已配置的真实 Provider；测试使用模拟 Provider。
 
-`text-input` 修改 `params.text`；生成节点修改 `params.prompt`，但已连接的文本输入优先。参数更新保留未指定字段并使节点和输出缓存失效；不自动重新生成。构建中的不完整画布可以保存，`canvas_render` 会验证完整图。相同幂等键只能重试相同生成请求；超时后先查任务状态，不能盲目重复提交。本次不提供画布整体删除、时间线编辑或导出工具。
+`canvas_render` **始终执行整张图**，包括图中的其他生成节点。`nodeId` 是缓存绕过的起点：强制重算该节点及其下游，不是“只生成这个节点”，也不会在这个节点暂停。`force: true` 会绕过所有生成节点的缓存；普通继续生成应省略 `nodeId` 和 `force`，让未修改的参考图从缓存复用。
+
+“先参考图，再视频”有两种流程：一次构建 `文本 → text-to-image → image-to-video → output`，会按依赖自动生成图片、再生成视频，中间不等待确认；如果需要先检查参考图，先只创建并生成图片画布，确认图像后再添加视频节点。即使未连接到 output，预先添加的视频生成节点也会被整图执行，不能靠断开输出实现暂停。
+
+图片任务成功且已查看实际参考图后，可在另一次 `execute` 中扩展上述图片画布。把下面三个 ID 替换为客户端保存的返回值；图片生成节点和提示词保持不变：
+
+```javascript
+const canvasId = '上一步的 canvasId';
+const imageNodeId = '上一步的 imageNodeId';
+const outputNodeId = '上一步的 outputNodeId';
+const graph = (await tools.canvas_get({ canvasId })).structuredContent;
+const oldOutputEdge = graph.edges.find(edge => edge.target === outputNodeId);
+const video = (await tools.canvas_node_add({
+  canvasId,
+  type: 'image-to-video',
+  params: {
+    prompt: '保持参考图场景，薄雾缓慢流动，固定机位，无文字',
+    durationMs: 4000, width: 1920, height: 1080
+  }
+})).structuredContent;
+await tools.canvas_edge_connect({
+  canvasId, source: imageNodeId, sourcePort: 'image', target: video.nodeId, targetPort: 'image'
+});
+await tools.canvas_edge_remove({ canvasId, edgeId: oldOutputEdge.id });
+await tools.canvas_edge_connect({
+  canvasId, source: video.nodeId, sourcePort: 'video', target: outputNodeId, targetPort: 'video'
+});
+return (await tools.canvas_render({
+  canvasId, idempotencyKey: `video-stage-v1-${canvasId}`
+})).structuredContent;
+```
+
+`durationMs` 的单位是毫秒，`4000` 表示请求 4 秒。Schema 只校验参数形状，不保证已配置模型支持该时长；一次真实调用中 Seedance 2.5 的参考图视频模式拒绝 3 秒、接受 4 秒，这不是所有模型或模式的能力承诺。遇到 Provider 参数错误需先读 `job_status.error`，修正参数后以新幂等键提交，不能原样重试。视频的宽高会映射为 Provider 支持的比例和分辨率档位；图片的 `sizeMode` 或项目 `imageResolution` 会优先于自定义宽高。需要精确 3 秒成片时，应生成模型支持的时长并在宿主外部裁剪；本 Code Mode 没有裁剪/导出或文件工具。
+
+`job_status` 的父任务 `succeeded` 才表示整图完成。父任务失败时也要检查 `children`：参考图可能已成功生成，可从子任务的 `result.path` 找到；整图失败时它未必已经写回 `canvas_get.cachedResult`。返回的 AssetRef 是本地文件引用，不包含媒体像素；用宿主媒体查看工具检查真实主体，用媒体探测工具检查时长和尺寸，不能把“任务成功”直接等同于“满足用户要求”。
+
+`text-input` 修改 `params.text`；生成节点修改 `params.prompt`，但非空的已连接文本输入优先，应该修改该输入节点。参数更新保留未指定字段并使节点和输出缓存失效；不自动重新生成。构建中的不完整画布可以保存，`canvas_render` 会验证完整图。相同幂等键用于重试同一次提交，会返回原来的任务（包括已失败/成功任务）；仅修改提示词不会让旧键变成新提交。新的生成意图必须使用新键；超时后先查任务状态，不能盲目重复提交。本次不提供画布整体删除、时间线编辑或导出工具。
 
 发送示例：`agent_send_prompt({"prompt":"读取 canvas-cut skill，查看当前项目有哪些画布"})`。随后调用 agent_get_run，以返回的 cursor 作为下次 after，直到 status 离开 running；最终文本见 run.text，完整内容可用 agent_history 获取。get-run/cancel 针对会话的最新运行，runId 用于核对运行身份，不是可查询任意旧运行的参数。
 
