@@ -230,6 +230,17 @@ export function TimelineView({
     onSeek?.(Math.round(ratio * totalMs));
   }
 
+  if ((timeline?.tracks?.length ?? 0) === 0) {
+    return (
+      <div className="timeline-body">
+        <div className="timeline-empty">
+          <span className="timeline-empty-title">Timeline is empty</span>
+          <span>Click ＋ to add a track, then drag media onto it.</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="timeline-body">
       <div className="timeline-ruler" onPointerDown={handleRulerPointerDown}>

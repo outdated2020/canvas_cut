@@ -1,88 +1,488 @@
 # Canvas Cut
 
-通用 Agent Runtime 的工具参数、MCP/Shell 配置和恢复机制见 [AGENT_RUNTIME.md](AGENT_RUNTIME.md)。
+Canvas Cut 是一个基于 Electron 的本地视频创作项目，使用节点画布组织图片与视频生成，通过时间线编排素材，并提供 CLI、内置 Agent 和外部 MCP Code Mode 三种自动化入口。
 
-Electron 视频创作原型：节点生成画布、时间线、Agent 与本地 CLI。当前实现边界和待办见 [PLAN.md](PLAN.md)，尚未完成真实成片流程验收。
+本 README 说明当前代码架构和实际使用方式。项目仍处于原型阶段；模型能力、生成质量和完整成片效果需要通过真实素材验证，自动化测试主要使用 mock Provider。
 
-## 开发环境
+## 目录
 
-- Node.js 20 以上、npm；当前测试环境为 Windows / Node.js 22。
-- `npm install` 安装 workspaces；桌面包 postinstall 使用 electron-rebuild 重建 better-sqlite3。
-- 导出需要 FFmpeg 与 ffprobe。可以把两者加入 PATH，或在运行时设置中填写 FFmpeg 完整路径并将 ffprobe 放在同一目录。也支持 FFMPEG_PATH / FFPROBE_PATH 环境变量。
+- [快速启动](#快速启动)
+- [代码架构](#代码架构)
+- [项目数据与配置](#项目数据与配置)
+- [配置 MCP 服务](#配置-mcp-服务)
+- [使用 MCP Code Mode](#使用-mcp-code-mode)
+- [生成任务与缓存语义](#生成任务与缓存语义)
+- [内置 Agent 与 CLI](#内置-agent-与-cli)
+- [验证与扩展](#验证与扩展)
+- [常见问题](#常见问题)
 
-## 常用命令
+## 快速启动
+
+### 环境要求
+
+- Node.js 与 npm。根项目声明 Node.js >= 20，已使用 Node.js 22 验证。
+- Windows 启动脚本使用 PowerShell。其他平台可构建后在 `apps/desktop` 下执行 `npm start`，平台行为仍需单独验收。
+- 时间线导出需要可用的 FFmpeg、ffprobe，并具备所需编码器和滤镜；仅存在同名可执行文件不代表支持完整导出。
+
+在仓库根目录执行：
 
 ```powershell
+npm install
 npm run build
-npm test
 npm run start:desktop
-npm run dev:desktop:app
-node apps/cli/dist/index.js --help
 ```
 
-启动脚本目前针对 Windows；其他平台可构建后在 apps/desktop 下执行 `npm start`，但 macOS 尚待验收。
+`npm install` 安装 npm workspaces；桌面包的 postinstall 使用 electron-rebuild 重建 better-sqlite3。`start:desktop` 默认再次构建并启动应用；已有构建时可使用 `npm run start:desktop -- -SkipBuild`。
 
-## 配置与数据
+首次使用可在桌面创建项目，也可通过 CLI 初始化一个新目录：
 
-在桌面 Settings 配置 ARK、Agent OpenAI 兼容地址/模型，以及需要上传时使用的 TOS bucket/region/endpoint/凭证。密钥不要加入仓库；桌面运行时设置通过 Electron safeStorage 加密敏感字段。
+```powershell
+node apps/cli/dist/index.js project init --project "C:/Projects/my-video" --name "My Video" --json
+node apps/cli/dist/index.js project status --project "C:/Projects/my-video" --json
+```
 
-项目保存为 JSON、assets、缓存与任务数据库。生成/渲染命令需要桌面主进程运行。修改画布后先渲染，再点击时间线的 Update canvas clips 更新引用；更新保留现有片段裁剪长度。
+在桌面设置中配置生成服务的 ARK 密钥；需要把本地参考图上传给视频模型时，还需配置 TOS 凭证、bucket、region 和 endpoint。模型地址、图片/视频模型等项目配置保存在项目的 `config.json`。
 
-## 验证
+画布生成需要桌面主进程运行。直接使用 Code Mode 画布工具无需配置内置 Agent 的聊天模型；调用 `agent_send_prompt` 开始模型对话时，需另配 Agent 地址、模型和密钥。
 
-`npm test` 重新编译测试使用的模块，执行本地 mock 与行为回归，不调用付费生成服务。`npm run build:desktop` 验证生产打包构建，但不会生成可分发安装包。
+## 代码架构
 
-真实验收至少覆盖：两段视频拼接、时间线空隙、原声音轨、独立音轨、画布图片、裁剪/变速、字幕、取消、重复提交与重启。保留导出文件并检查时长和音画；测试通过不代表 FFmpeg 或 Provider 已联调通过。
+项目使用 TypeScript 和 npm workspaces。桌面负责界面、系统资源和长任务，core 提供业务逻辑，CLI 提供命令与 stdio MCP，Code Mode 提供受限 JavaScript 编排，Agent Runtime 提供独立的模型与工具循环。
 
-## 通用 Agent
+### 模块分工
 
-在 Settings 配置 Agent 地址、模型和密钥，打开项目后在聊天框提交任务。Agent 只使用文件和命令基础工具；视频能力通过内置 Skills 与 `canvas-cut` CLI 执行。聊天面板显示工具进度、历史和停止按钮。
+| 目录 | 职责 | 主要入口 |
+| --- | --- | --- |
+| `apps/desktop/src/renderer` | React 界面、React Flow 画布、时间线、对话和设置；接收项目刷新通知 | `App.tsx`、`CanvasGraphView.tsx`、`TimelineView.tsx` |
+| `apps/desktop/src/preload` | 向 renderer 暴露受控的 Electron IPC 接口 | `preload.ts` |
+| `apps/desktop/src/main` | 窗口、设置与凭证、本地 IPC 服务、任务调度、素材上传、Agent 宿主 | `main.ts`、`ipc-server.ts`、`daemon.ts`、`job-worker.ts` |
+| `apps/cli/src` | CLI 参数解析、项目/画布/时间线命令、MCP 服务和 IPC 客户端 | `index.ts`、`mcp/server.ts`、`mcp/canvas-tools.ts`、`ipc/client.ts` |
+| `packages/core/src` | 项目持久化、画布图操作与执行计划、节点缓存、Provider 适配、时间线与 FFmpeg | `project/project-store.ts`、`canvas/*`、`provider/*`、`timeline/*` |
+| `packages/codemode/src` | 工具目录、Schema 校验、发现提示、QuickJS/WASM Worker 和资源限制 | `index.ts`、`catalog.ts`、`executor.ts`、`worker.ts` |
+| `packages/agent/src` | 通用 Agent Runtime；模型流式调用、文件/补丁、Shell/PTY、Skills、外部 MCP、会话恢复 | `runtime.ts`、`tools.ts`、`host.ts`、`mcp.ts`、`sessions.ts` |
+| `skills` | 桌面 Agent 使用的画布、图生视频、分镜等工作流说明 | 各目录的 `SKILL.md` |
+| `tests` | IPC、CLI、画布、任务、时间线、Agent 和 Code Mode 回归 | `canvas-codemode.test.mjs`、`mcp.test.mjs` 等 |
 
-内置 Skill 位于 `skills`，用户扩展放在 `~/.canvas-cut/skills/<name>/SKILL.md`，项目扩展放在 `<project>/skills/<name>/SKILL.md`。项目覆盖用户，用户覆盖内置；每轮重新扫描。
+### 主要调用关系
 
-当前采用本地可信执行：Windows PowerShell，macOS Bash；项目只是默认工作目录，不是沙箱，没有逐条命令审批。Web Search 和沙箱属于后续能力。停止 Agent 会终止该轮 Shell，已经提交的生成任务需要通过 `canvas-cut job cancel <jobId> --json` 单独取消。
+```mermaid
+flowchart LR
+  External[外部 MCP Client / Agent] --> MCP[CLI stdio MCP]
+  MCP --> Mode[Code Mode / QuickJS]
+  Mode --> Bridge[tools.* / LocalIpcClient]
+  Bridge --> Main[桌面主进程 / LocalIpcServer]
+  UI[React 界面] --> Preload[Electron preload IPC]
+  Preload --> Main
+  Main --> Canvas[core / CanvasOperations]
+  Canvas --> Store[ProjectStore / 项目文件]
+  Main --> Daemon[DaemonService / JobStore]
+  Daemon --> Worker[JobWorker]
+  Worker --> Engine[core / 画布与时间线执行]
+  Engine --> Provider[生成 Provider / 素材下载]
+  Worker --> FFmpeg[FFmpeg / 成片导出]
+  Main --> Agent[通用 Agent Runtime]
+  Agent --> CLI[CLI / Skills / 外部工具]
+```
 
-会话与命令日志保存在桌面 userData 下的 `agent/sessions`。重启后保留工具历史，将未完成运行标记为中断，继续时先检查已有结果。CLI 在应用启动时自动配置到 Agent 的 PATH；开发环境需要先构建桌面与 CLI。架构和完整限制见 [AGENT_ORCHESTRATION_DESIGN.md](AGENT_ORCHESTRATION_DESIGN.md)。
+外部 MCP 使用 stdio；CLI 与桌面之间使用带 token 的本地 IPC：Windows 为 named pipe，其他平台为 Unix socket。IPC 连接信息保存在桌面 userData 的 `ipc/instance.json`，客户端检查实例进程并连接对应 endpoint；该服务不新增网络监听端口。
 
-## 外部 MCP 对话接入
+内置 Agent 的 `packages/agent/src/mcp.ts` 是向外连接其他 MCP 服务的客户端，`apps/cli/src/mcp/server.ts` 则是供外部 Agent 访问 Canvas Cut 的服务端，两者方向不同。
 
-桌面启动并配置 Agent 后，外部 MCP 客户端可启动本仓库的 stdio 服务。先构建 CLI（`npm run build:cli`）；使用 Node.js 22，CLI 入口和项目参数都填写绝对路径。例如客户端配置：
+### 画布编辑与生成
+
+画布编辑链路为 `execute → tools.canvas_* → Local IPC → CanvasOperations → ProjectStore`。桌面编辑和外部 IPC 复用 `CanvasOperations`；传统 CLI 编辑命令调用同一组 core 图操作与持久化函数。
+
+`canvas/api.ts` 定义工具的输入/输出 Schema 和节点参数说明，`canvas/registry.ts` 定义节点类型与端口，`canvas/graph.ts` 处理节点、连线、版本和图校验。编辑通过项目锁和原子 JSON 写入保存；构建中的不完整图允许保存，生成时再验证整图。
+
+`canvas/engine.ts` 根据整张图建立拓扑执行计划，解析上游文本和素材，并生成 Provider 请求。节点缓存键包含节点类型、参数、输入文本/素材 ID 和项目分辨率设置；缓存文件存在时可以复用结果。`graphHash` 用于描述图结构和参数，不包含执行状态及缓存结果。
+
+生成链路为 `canvas_render → DaemonService → JobStore → JobWorker → 画布引擎 → Provider`。提交立即返回 `jobId`，Worker 在后台执行。默认使用项目 SQLite 保存任务，SQLite 不可用时回退到 `cache/jobs.json`。父任务表示整图生成，子任务表示各个生成节点。
+
+Worker 将结果写入 assets 和缓存，并在图未发生变化时写回节点与 output。编辑和生成结果写回后，主进程发送 `canvas-cut:canvas-changed`；renderer 按项目过滤、合并短时间通知，并通过视图标识和请求版本防止切换画布后的旧响应覆盖新页面。刷新保留存续节点的位置与选择，不自动打开新建画布。
+
+### Code Mode 执行器
+
+`Catalog` 根据注册目录返回工具描述、输入/输出 JSON Schema 和 TypeScript 调用提示，并用 Ajv 校验实际参数。每次 `execute` 创建独立 Worker，Worker 内使用 QuickJS/WASM 执行普通 JavaScript 异步函数体。
+
+脚本通过冻结的 `tools` 对象调用注册方法。异步调用经 Worker 消息桥接到宿主，由宿主执行工具并返回 MCP 包装结果。脚本不能直接访问 Node.js、环境变量、文件系统或网络；已注册工具仍会产生它们对应的真实业务副作用。
+
+## 项目数据与配置
+
+典型项目目录如下：
+
+```text
+my-video/
+├── project.json          # 项目 ID、名称、默认分辨率和帧率
+├── config.json           # Provider、TOS、并发和 FFmpeg 项目配置
+├── canvases/
+│   └── <canvasId>.json    # 节点、参数、端口、连线、版本与 graphHash
+├── timeline/
+│   └── timeline.json     # 轨道、媒体/画布引用、裁剪与效果
+├── assets/               # 导入及生成的图片、视频和音频
+├── cache/
+│   └── nodes.json        # 节点生成缓存；必要时还有 jobs.json
+├── presets/              # 保存的画布预设
+├── jobs.sqlite           # 异步任务数据库，按需创建
+└── skills/               # 可选的项目 Skills
+```
+
+桌面运行时设置、IPC 实例信息和 Agent 会话保存在 Electron userData。敏感设置通过 Electron safeStorage 加密，不应把密钥或运行时凭证提交到项目仓库。生成 Worker 从桌面进程读取 ARK 和 TOS 凭证，因此只给 MCP 子进程配置密钥不能代替桌面配置。
+
+FFmpeg 与 ffprobe 可以加入 PATH，也可在桌面设置填写 FFmpeg 可执行文件的完整路径，并将 ffprobe 放在同目录；支持 `FFMPEG_PATH` / `FFPROBE_PATH` 环境变量。画布修改后需要重新生成；时间线引用可通过桌面更新操作或 CLI `timeline refresh-canvases` 更新，更新会保留已有裁剪长度。
+
+## 配置 MCP 服务
+
+先构建 CLI 并启动桌面：
+
+```powershell
+npm run build:cli
+npm run start:desktop
+```
+
+在 MCP 客户端中添加 stdio 服务。下面是常见的 JSON 配置结构；把 Node、CLI 入口和项目目录替换为本机实际的绝对路径：
 
 ```json
 {
   "mcpServers": {
     "canvas-cut": {
-      "command": "node",
+      "command": "C:/Program Files/nodejs/node.exe",
       "args": [
-        "C:/Users/liqijun/Desktop/canvas_cut/apps/cli/dist/index.js",
+        "C:/path/to/canvas_cut/apps/cli/dist/index.js",
         "mcp",
         "--project",
-        "C:/Users/liqijun/Desktop/canvas_cut/demo-project"
+        "C:/Projects/my-video"
       ]
     }
   }
 }
 ```
 
-| 工具 | 参数 | 用途 |
+客户端也可以直接启动 `node <CLI绝对路径> mcp --project <项目绝对路径>`。这是长期运行的 stdio 服务，应由 MCP 客户端维持 stdin/stdout；不是执行一次就输出所有画布的普通 CLI 命令。
+
+`projectPath` 默认取 MCP 启动时的 `--project`，不会跟随桌面当前项目变化。内部项目工具可传 `projectPath` 覆盖默认值；`canvas_node_types` 不需要项目，但仍通过桌面 IPC 调用。修改代码或工具说明后，重新构建并重连 MCP，让客户端刷新缓存的工具列表和 `initialize.instructions`。
+
+### 对外工具与内部目录
+
+`tools/list` 对外暴露 7 个工具：
+
+| 工具 | 用途 |
+| --- | --- |
+| `search_tools` | 发现可在 Code Mode 中调用的内部工具 |
+| `execute` | 执行 JavaScript，编排注册工具 |
+| `agent_send_prompt` | 向桌面 Agent 会话提交 prompt，立即返回 runId |
+| `agent_get_run` | 查询会话最新运行及游标后的增量事件 |
+| `agent_history` | 读取会话消息、工具历史与最新运行 |
+| `agent_cancel` | 停止会话当前 Agent 运行 |
+| `ui_screenshot` | 获取桌面窗口截图；fresh=false 读取最近保存截图 |
+
+四个 `agent_*` 工具支持可选 `projectPath`、`conversationId`，默认会话 ID 为 `default`；`agent_get_run` 还支持 `after` 游标。`runId` 用于核对身份，不是查询任意历史运行的参数。
+
+画布和任务方法只注册在 Code Mode 内部目录，必须在 `execute` 中写 `tools.canvas_create(...)` 等。不要发送顶层 `tools/call` 的 `name: "canvas_create"`，也不需要为原生画布操作启动另一轮内置 Agent。
+
+## 使用 MCP Code Mode
+
+### 1. 发现工具
+
+客户端调用 `search_tools`，参数例如：
+
+```json
+{ "query": "canvas", "offset": 0, "limit": 20 }
+```
+
+搜索匹配工具名称和描述，空格分隔的词必须全部匹配；空 `query` 列出所有内部工具。默认 `limit` 为 10，上限 20，通过返回的 `nextOffset` 分页。
+
+返回值在 `content[0].text` 中，是 JSON，包含 `total`、`nextOffset`、`tools`。每个工具条目提供 `name`、`description`、`inputSchema`、`outputSchema`（存在时）、`declaration` 和 `resultType`。TypeScript 声明用于指导模型写代码，实际 `execute` 不支持 TypeScript 语法。
+
+### 2. 编写并执行 JavaScript
+
+`execute` 的参数是 `{ "code": "..." }`，code 为异步函数体，直接使用顶层 `await` 和 `return`，不要加外层函数声明或 TypeScript 类型。最小只读调用：
+
+```json
+{
+  "code": "const { canvases } = (await tools.canvas_list({})).structuredContent; return { count: canvases.length, canvases };"
+}
+```
+
+除 SDK 客户端示例外，下文的 JavaScript 代码块都应作为 `code` 字符串提交，不是在宿主 Node.js 中直接运行。支持循环、`Promise.all`、`try/catch` 和 `console.log`；依赖上一步返回值的创建、连线与生成操作应顺序执行。
+
+两层返回值需要分别处理：
+
+| 所在位置 | 读取方式 |
+| --- | --- |
+| Code Mode 内部的画布/任务工具结果 | `(await tools.canvas_get(...)).structuredContent` |
+| Code Mode 内部的旧 Agent 工具结果 | `JSON.parse((await tools.agent_history(...)).content[0].text)` |
+| 客户端收到的 execute 结果 | 先检查 `response.isError`，再读取 `JSON.parse(response.content[0].text)`，其字段为 `{ result, logs, calls }` |
+
+内部工具返回 isError 时会转成可捕获的异常。每次执行都是新运行时，变量和 globalThis 不会跨调用保留；客户端应保存返回的 canvasId、nodeId、edgeId 和 jobId，并在后续代码中再次传入。
+
+### 3. 查询节点和参数
+
+添加节点前先执行：
+
+```javascript
+return (await tools.canvas_node_types({})).structuredContent;
+```
+
+目前包含 10 类节点，端口 ID 区分大小写：
+
+| 类型 | 输入端口 | 输出端口 | 参数示例 |
+| --- | --- | --- | --- |
+| `text-input` | 无 | `text` | `{ text: "中文提示词" }` |
+| `image-input` | 无 | `image` | `{ asset: AssetRef }` |
+| `video-input` | 无 | `video` | `{ asset: AssetRef }` |
+| `canvas-reference` | 无 | `video` | `{ canvasId: "其他画布ID" }` |
+| `text-to-image` | `text` | `image` | `{ prompt: "后备提示词", sizeMode: "2K" }` |
+| `text-to-video` | `text` | `video` | `{ durationMs: 4000, width: 1920, height: 1080 }` |
+| `image-to-image` | `image`、`text` | `image` | `{ prompt: "修改画面", strength: 0.5 }` |
+| `image-to-video` | `image`、`text` | `video` | `{ prompt: "镜头运动", durationMs: 4000 }` |
+| `video-to-video` | `video`、`text` | `video` | `{ prompt: "修改视频", mode: "edit" }` |
+| `output` | `image`、`video` | `image`、`video` | `{}` |
+
+必需输入也可以由非空 `params.prompt` 或对应 `params.asset` 满足。非空的已连接文本优先于生成节点的 prompt，因此有文本输入连线时应修改输入节点的 `params.text`。连线两端媒体类型必须一致，已占用的输入端口会拒绝重复连接。
+
+目录中的 `paramsSchema`、`requiredInputPorts`、`exampleParams` 和 `notes` 描述结构约束，不代表已配置 Provider/模型支持每个参数值。
+
+### 4. 创建、修改画布并提交图片任务
+
+下面创建“文本 → 文生图 → 输出”画布，修改文本，重读确认中文一致，再提交生成：
+
+```javascript
+const data = r => r.structuredContent;
+const { canvasId } = data(await tools.canvas_create({}));
+const input = data(await tools.canvas_node_add({
+  canvasId, type: "text-input", params: { text: "一只狸花猫坐在窗边，写实摄影" }
+}));
+const image = data(await tools.canvas_node_add({
+  canvasId, type: "text-to-image", params: { sizeMode: "2K", watermark: false }
+}));
+const output = data(await tools.canvas_node_add({ canvasId, type: "output" }));
+await tools.canvas_edge_connect({
+  canvasId, source: input.nodeId, sourcePort: "text", target: image.nodeId, targetPort: "text"
+});
+await tools.canvas_edge_connect({
+  canvasId, source: image.nodeId, sourcePort: "image", target: output.nodeId, targetPort: "image"
+});
+const text = "16:9横向构图，一只中国狸花猫坐在窗边，绿色眼睛，虎斑清晰，柔和晨光，写实摄影，无文字";
+await tools.canvas_node_set_params({ canvasId, nodeId: input.nodeId, params: { text } });
+const saved = data(await tools.canvas_get({ canvasId }));
+if (saved.nodes.find(n => n.id === input.nodeId).params.text !== text) {
+  throw new Error("提示词写入校验失败，停止生成");
+}
+const job = data(await tools.canvas_render({
+  canvasId, idempotencyKey: `image-v1-${canvasId}`
+}));
+return {
+  canvasId, inputNodeId: input.nodeId, imageNodeId: image.nodeId,
+  outputNodeId: output.nodeId, imageJobId: job.jobId
+};
+```
+
+所有项目方法都支持可选 `projectPath`，默认使用启动配置。编辑接口及结果如下：
+
+| 方法 | 主要参数 | structuredContent 结果 |
 | --- | --- | --- |
-| agent_send_prompt | prompt | 向会话发送 prompt，立即返回 runId |
-| agent_get_run | after（可选） | 查询最新运行、增量事件与 cursor |
-| agent_history | 无必填参数 | 读取完整持久化对话与工具历史 |
-| agent_cancel | 无必填参数 | 停止当前会话的 Agent 运行 |
-| ui_screenshot | fresh（可选） | 保留原有桌面截图能力 |
-| search_tools | query、offset、limit（均可选） | 搜索可在代码中调用的工具，返回 JSON Schema 与 TypeScript 调用提示 |
-| execute | code | 在隔离运行时执行 JavaScript，编排 Agent、画布编辑和生成任务工具 |
+| `canvas_list` | 无必填参数 | `{ canvases }`，列表项含 canvasId、version、nodeCount |
+| `canvas_get` | canvasId | 完整画布对象，包含 nodes、edges、version、graphHash |
+| `canvas_create` | 无必填参数 | `{ canvasId, version, canvas }` |
+| `canvas_node_add` | canvasId、type、可选 params | `{ nodeId, version, node }` |
+| `canvas_node_set_params` | canvasId、nodeId、params | `{ nodeId, version, node }`，参数合并更新 |
+| `canvas_node_remove` | canvasId、nodeId | `{ removed, version }`，同时删除关联边 |
+| `canvas_edge_connect` | canvasId、source、sourcePort、target、targetPort | `{ edgeId, version, edge }` |
+| `canvas_edge_remove` | canvasId、edgeId | `{ removed, version }` |
+| `canvas_render` | canvasId、可选 nodeId/force/idempotencyKey | `{ jobId, type, childJobIds? }` |
+| `job_status` | jobId | 状态、进度、结果、错误及子任务 |
+| `job_cancel` | jobId | `{ cancelled }` |
 
-四个 Agent 工具都可传 projectPath 覆盖启动参数，以及 conversationId 指定会话；默认 conversationId 为 `default`，对应桌面当前显示的对话。桌面打开同一项目时会自动同步外部 prompt 和结果，并切到聊天视图；其他项目不会自动切换。自定义会话可通过 MCP 查询，桌面暂没有会话切换入口。
+`canvas_create` 创建空画布，不初始化项目，也不切换桌面到新画布。编辑参数保留未指定字段，更新版本并使相关缓存失效，不自动生成。
 
-### Code Mode
+### 5. 查询或取消生成任务
 
-沿用上述 MCP 启动配置，无需另外启动服务。先调用 `search_tools({"query":"agent"})` 发现工具；空 query 列出全部可编排工具。搜索按名称和描述匹配，空格分隔的词必须全部匹配。返回的 `nextOffset` 用于继续分页。
+在后续 execute 中，把 JOB_ID 替换为上一步返回的真实 jobId：
 
-`initialize` 的 `instructions`、工具描述和参数 Schema 都包含使用约束。`canvas_*` / `job_*` 是内部方法，只能在 `execute` 中调用 `tools.<方法名>`，不能把它们作为顶层 MCP `tools/call` 的名称。原生画布操作无需调用 `agent_send_prompt` 启动另一轮 Agent 对话。修改描述并重新构建后，客户端需要重连 MCP；已经缓存的旧工具描述不会自动更新。
+```javascript
+return (await tools.job_status({ jobId: "JOB_ID" })).structuredContent;
+```
 
-stdio 使用 **UTF-8、无 BOM、每行一个 JSON-RPC 消息**。优先使用 MCP SDK 的 stdio transport。手写 PowerShell/.NET 客户端时，必须在启动子进程前显式设置重定向流编码；仅设置控制台编码或 `$OutputEncoding` 不会设置 `Process.StandardInput` 的编码：
+状态为 `pending`、`running`、`succeeded`、`failed` 或 `cancelled`。客户端在多次独立 execute 调用之间等待；不要在同一个脚本中长时间轮询。需要取消时单独执行：
+
+```javascript
+return (await tools.job_cancel({ jobId: "JOB_ID" })).structuredContent;
+```
+
+父任务 succeeded 表示整图完成。父任务失败时也应检查 `children`：例如图片已经成功而视频失败，参考图仍可能位于子任务的 `result.path`，但未必已写回画布节点。
+
+AssetRef 是文件引用，通常含 `{ id, path, type, sizeBytes }`，时长和尺寸字段不一定存在。应使用宿主媒体工具查看实际主体，并用 ffprobe 等检查时长、尺寸；成功状态本身不保证生成内容符合提示词。
+
+### 6. 先检查参考图，再生成视频
+
+如果只要求顺序生成，可一次创建“文生图 → 图生视频 → output”图，Worker 会按依赖自动执行，中间不会暂停。
+
+如果需要先检查参考图，先完成上面的图片画布并查看结果，再添加视频节点。把下面 ID 替换为客户端保存的真实值；不要提前创建一个断开的视频生成节点，因为整图执行也会运行它。
+
+```javascript
+const canvasId = "CANVAS_ID";
+const imageNodeId = "IMAGE_NODE_ID";
+const outputNodeId = "OUTPUT_NODE_ID";
+const graph = (await tools.canvas_get({ canvasId })).structuredContent;
+const oldOutputEdge = graph.edges.find(e => e.target === outputNodeId);
+if (!oldOutputEdge || oldOutputEdge.source !== imageNodeId) {
+  throw new Error("当前画布不是预期的图片输出，请先检查画布");
+}
+const video = (await tools.canvas_node_add({
+  canvasId, type: "image-to-video",
+  params: {
+    prompt: "保持参考图中的狸花猫和场景一致，轻轻转头，自然眨眼，固定机位，无文字",
+    durationMs: 4000, width: 1920, height: 1080
+  }
+})).structuredContent;
+await tools.canvas_edge_connect({
+  canvasId, source: imageNodeId, sourcePort: "image", target: video.nodeId, targetPort: "image"
+});
+await tools.canvas_edge_remove({ canvasId, edgeId: oldOutputEdge.id });
+await tools.canvas_edge_connect({
+  canvasId, source: video.nodeId, sourcePort: "video", target: outputNodeId, targetPort: "video"
+});
+const job = (await tools.canvas_render({
+  canvasId, idempotencyKey: `video-v1-${canvasId}`
+})).structuredContent;
+return { canvasId, videoNodeId: video.nodeId, videoJobId: job.jobId };
+```
+
+保持原图片节点、提示词及项目设置不变时，参考图通常会命中缓存；此处省略 nodeId 和 force，避免强制重新生成参考图。
+
+### 7. 用 MCP SDK 接入
+
+下面是宿主 Node.js 客户端示例，应保存为 `.mjs` 并在安装了 `@modelcontextprotocol/sdk` 的环境执行。它通过 SDK 自动完成协议初始化，仅查询画布数量；与上面的 Code Mode 函数体示例不同，它运行在客户端进程中。
+
+```javascript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const client = new Client({ name: "canvas-cut-client", version: "1.0.0" });
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: ["C:/path/to/canvas_cut/apps/cli/dist/index.js", "mcp", "--project", "C:/Projects/my-video"]
+});
+try {
+  await client.connect(transport);
+  const discovery = await client.callTool({ name: "search_tools", arguments: { query: "canvas_list" } });
+  if (discovery.isError) throw new Error(discovery.content[0].text);
+  console.log(JSON.parse(discovery.content[0].text));
+  const response = await client.callTool({
+    name: "execute",
+    arguments: { code: "const { canvases } = (await tools.canvas_list({})).structuredContent; return { count: canvases.length, canvases };" }
+  });
+  if (response.isError) throw new Error(response.content[0].text);
+  console.log(JSON.parse(response.content[0].text).result);
+} finally {
+  await client.close();
+}
+```
+
+## 生成任务与缓存语义
+
+| 行为 | 实际语义 |
+| --- | --- |
+| `canvas_render({ canvasId })` | 验证并执行整张图，正常复用缓存；返回任务 ID，不等待生成完成 |
+| `canvas_render({ canvasId, nodeId })` | 强制重算该节点及其下游；仍执行整图，不是单节点目标，也不会在该节点停止 |
+| `canvas_render({ canvasId, force: true })` | 绕过所有生成节点缓存，可能重复调用图片和视频 Provider |
+| 复用 idempotencyKey | 用于同一次提交的不确定重试；返回原任务，包括已成功/失败任务 |
+| 编辑提示词后再生成 | 使用新幂等键；编辑图本身不会使旧键变成新提交 |
+| 同一个 key 改变 render 参数 | 可能报幂等冲突，不能作为新的生成请求 |
+| 多次工具调用中途失败 | 之前成功的修改保留；整段脚本不是事务 |
+| execute 超时/取消或 MCP 断开 | 已派发编辑可能完成，已提交生成继续运行；查询状态后用 job_cancel 明确取消 |
+
+`durationMs` 单位是毫秒，4000 表示请求 4 秒。当前视频适配器转换为整秒；模型及生成模式可能拒绝通过 Schema 校验的时长。一次实际 Seedance 2.5 参考图视频调用拒绝 3 秒、接受 4 秒，这只是该次配置的观察，不是所有模型的能力承诺。
+
+视频宽高会映射为 Provider 支持的比例和分辨率档位，帧率等请求值也未必被支持；图片的 sizeMode 或项目 imageResolution 可以优先于自定义宽高。请求 16:9 可使用 1920×1080 的视频参数，同时在图片提示词中明确横向构图，最后检查实际结果。
+
+需要精确 3 秒成片时，应请求模型支持的时长，再通过宿主工具或时间线导出裁剪。本 Code Mode 内部目录目前没有时间线编辑、画布整体删除、素材导入、裁剪或导出方法；CLI/桌面具备的能力不会自动出现在 tools 中。
+
+### 执行限制
+
+| 限制 | 默认值 |
+| --- | --- |
+| 单次 execute 时限 | 30 秒 |
+| QuickJS 堆内存 | 32 MiB |
+| 单次工具调用次数 | 32 |
+| 返回内容大小 | 1 MiB |
+| JavaScript 源码 | 64 KiB |
+| 同时执行数 | 4 |
+| console.log 累计大小 | 64 KiB |
+| 工具返回消息桥累计大小 | 4 MiB |
+
+JavaScript 不提供 process、require、fetch、文件系统、模块导入或定时器。Code Mode 的隔离只约束脚本自身；调用 agent_send_prompt 仍会启动有本地文件和 Shell 能力的桌面 Agent。
+
+## 内置 Agent 与 CLI
+
+桌面 Agent 使用 AI SDK 进行单步流式模型调用，注册文件、补丁、Shell/PTY、Skills 和外部 MCP 工具；由桌面宿主提供模型配置、项目 cwd、应用说明和 canvas-cut CLI launcher。每个会话只允许一个活动运行，会话消息、工具记录和游标保存在 userData 的 `agent/sessions`，重启后保留历史并标记中断运行。
+
+Skills 的覆盖优先级为项目 > 用户 > 内置：项目 `<project>/skills`，用户 `~/.canvas-cut/skills`，内置仓库 `skills`。运行时按需发现和加载说明。当前为本地可信执行模式，项目 cwd 不是文件系统沙箱。
+
+停止 Agent 会停止该 run 的模型调用及所属本地进程，不自动取消已提交的生成任务。外部 Agent 也可以直接使用 Code Mode，无需经过内置 Agent 的模型循环。
+
+CLI 的主要命令族包括 project、canvas、generate、job、timeline、asset、preset。查看实际命令和参数：
+
+```powershell
+node apps/cli/dist/index.js --help
+node apps/cli/dist/index.js manifest --json
+node apps/cli/dist/index.js canvas render --help
+```
+
+CLI 的项目/画布文件操作可直接使用 core，生成、任务查询和导出通过桌面 IPC。`--json` 便于解析结果；支持 dry-run 的生成、画布渲染和导出命令可用 `--dry-run` 验证请求，其他命令不支持该选项。
+
+## 验证与扩展
+
+常用开发命令：
+
+```powershell
+npm run typecheck
+npm run build:cli
+npm run build:desktop
+npm test
+npm run test:codemode
+npm run dev:desktop:app
+```
+
+`npm test` 编译测试模块并运行 mock 模型/Provider、真实本地 stdio/IPC 和行为回归，不调用付费生成服务。`build:desktop` 验证 TypeScript 与 renderer 生产构建，不生成可分发安装包。真实验收还需覆盖 Provider、上传、媒体质量、时间线、字幕、音轨、取消和 FFmpeg 导出。
+
+新增画布/任务 Code Mode 工具时，在 `packages/core/src/canvas/api.ts` 定义业务接口、描述及输入/输出 Schema，在对应 core/桌面服务实现业务，再由 `apps/cli/src/mcp/canvas-tools.ts` 注册桥接。确保返回 structuredContent 和 JSON text，并在修改成功后发送项目刷新通知。
+
+新增节点时，需要同步更新 registry、参数 Schema、图校验、执行请求与 Provider 支持；新增 Provider 时实现 GenerationProvider 并接入 factory。维护工具说明时应同时核对 `CODEMODE_INSTRUCTIONS`、`CODEMODE_TOOLS` 和本 README，避免声明未实现的能力。
+
+相关设计与接口文档：
+
+| 文档 | 内容 |
+| --- | --- |
+| [AGENT_RUNTIME.md](AGENT_RUNTIME.md) | Agent 工具参数、配置、会话与恢复机制 |
+| [AGENT_ORCHESTRATION_DESIGN.md](AGENT_ORCHESTRATION_DESIGN.md) | Agent、Skills、CLI 宿主关系 |
+| [CORE_ENGINE_DESIGN.md](CORE_ENGINE_DESIGN.md) | 核心图执行与缓存设计 |
+| [CANVAS_PROTOCOL.md](CANVAS_PROTOCOL.md) | 画布数据协议 |
+| [LOCAL_IPC_PROTOCOL.md](LOCAL_IPC_PROTOCOL.md) | 本地 IPC 协议 |
+| [PROJECT_STATE_PROTOCOL.md](PROJECT_STATE_PROTOCOL.md) | 项目数据结构 |
+| [PROVIDER_ADAPTER_DESIGN.md](PROVIDER_ADAPTER_DESIGN.md) | Provider 适配设计 |
+| [TIMELINE_RENDER_DESIGN.md](TIMELINE_RENDER_DESIGN.md) | 时间线与导出设计 |
+| [PLAN.md](PLAN.md) | 当前进展与待办 |
+
+历史设计文档可能包含计划能力；当前可调用工具及其 Schema 以运行服务的发现结果为准。
+
+## 常见问题
+
+| 现象 | 排查方式 |
+| --- | --- |
+| `Unknown tool: canvas_create` | 这是内部方法，应调用 execute，代码中写 tools.canvas_create |
+| 客户端只显示旧工具或旧说明 | 确认 CLI dist 已重新构建，重启/重连 MCP 服务，刷新工具缓存 |
+| `Electron main process is not running` | 确认桌面已启动，MCP 与桌面属于同一用户环境，且可访问 userData 的 IPC 实例文件 |
+| 查到的画布不是桌面当前项目 | 检查 MCP --project；它不跟随桌面项目切换，必要时显式传 projectPath |
+| 中文变成 `????` | 检查客户端 stdin 编码；进入 MCP 前已丢失的字符无法恢复，应恢复原文再提交 |
+| `InvalidParameter` 时长/尺寸错误 | 读取 job_status.error，使用模型支持的参数，修正后用新幂等键提交 |
+| 视频模型拒绝本地参考图 | 检查桌面 TOS 上传配置和凭证；本地文件需要上传后才能交给 Provider |
+| 改了生成节点 prompt 却没改变内容 | 查看是否有非空文本输入连线；它优先于 prompt，应修改该输入节点的 params.text |
+| 修改提示词后返回旧任务 | 检查是否复用旧幂等键；新生成需新键 |
+| 图片成功但视频失败 | 查看 job_status.children 的图片结果与视频 error，保留成功素材后修正失败阶段 |
+| 执行超时后不确定是否生成 | 先按已返回 jobId 查询任务，或重读画布；有稳定键时只重试同一次提交 |
+
+手写 PowerShell/.NET stdio 客户端必须在启动子进程前设置重定向流为 UTF-8、无 BOM，每行发送一个 JSON-RPC 消息。仅设置控制台编码或 `$OutputEncoding` 不会设置 Process.StandardInput 的编码：
 
 ```powershell
 $utf8 = [System.Text.UTF8Encoding]::new($false)
@@ -91,112 +491,4 @@ $startInfo.StandardOutputEncoding = $utf8
 $startInfo.StandardErrorEncoding = $utf8
 ```
 
-曾发生默认 `ibm437` 把中文在进入 MCP 前替换为 `?` 的问题。服务无法恢复已经丢失的字符；提交生成前先用 `canvas_get` 重读提示词并与原文比较，不要仅凭请求代码判断中文传输正确。
-
-再调用 `execute({"code":"..."})`。code 是异步函数体，直接写 JavaScript，支持顶层 await、return、循环、Promise.all 和 try/catch；TypeScript 类型只是调用提示，不接受 TypeScript 语法。例：
-
-```javascript
-const responses = await Promise.all([
-  tools.agent_history({}),
-  tools.agent_get_run({})
-]);
-const [history, status] = responses.map(r => JSON.parse(r.content[0].text));
-console.log('读取会话完成');
-return { messages: history.messages, run: status.run };
-```
-
-`execute` 的 text 内容是 JSON：`{result, logs, calls}`，只把脚本返回值、console.log 和调用次数交给模型。`tools.*` 保留原 MCP 返回格式；工具 isError 转成可捕获的异常。截图的图片仍在 content 中，以 base64 返回，较大图片可能触及结果限制；需要直接显示图片时使用原 `ui_screenshot` 工具。
-
-注意两层返回值：脚本内部通过 `r.structuredContent` 读取画布/任务数据；客户端收到的 `execute` 响应通过 `JSON.parse(response.content[0].text).result` 取得脚本返回值，先检查 `response.isError` 再解析。每次执行的变量都会清空，后续调用所需的 `canvasId` / `nodeId` / `jobId` 必须由客户端保存并再次传入代码。
-
-执行器位于 `packages/codemode`，采用独立 Worker 中的 QuickJS/WASM。每次执行新建运行时，不提供 process、require、fetch、文件、模块或定时器能力，只能通过注册工具访问宿主。默认限制：30 秒、32 MiB QuickJS 堆、32 次工具调用、1 MiB 输出、64 KiB 代码、最多 4 个并发执行；日志最多 64 KiB，上游返回数据累计最多 4 MiB。工具参数在宿主再次按 JSON Schema 验证。
-
-MCP `notifications/cancelled` 与 stdin 关闭会终止代码执行。已经提交的 Agent 或生成任务不会自动回滚；查询状态后按需调用 `agent_cancel` 或 `tools.job_cancel`。代码隔离限制的是 JavaScript 自身；`agent_send_prompt` 仍授予现有桌面 Agent 的本地文件和 Shell 能力。脚本不是事务，中途失败会保留此前成功的修改。
-
-`npm run test:codemode` 验证编排、参数校验、隔离与资源限制；`npm test` 同时覆盖真实 stdio → Code Mode → 桌面 IPC 会话调用。
-
-### Code Mode 画布与生成
-
-桌面运行、项目已初始化时，调用 `search_tools({"query":"canvas"})` 获取画布工具，按 `nextOffset` 分页。对外 MCP 仍是上述 7 个工具；以下方法仅供 `execute` 中调用，不会单独出现在 `tools/list` 中。
-
-| 方法 | 参数与结果 |
-| --- | --- |
-| `canvas_list` / `canvas_get` | 列出画布；按 `canvasId` 读取完整图与版本 |
-| `canvas_node_types` | 返回 10 种节点类型、端口、参数 Schema、必需输入与示例 |
-| `canvas_create` | 创建空画布，返回 `canvasId`、`version`、`canvas` |
-| `canvas_node_add` | `canvasId`、`type`、可选 `params`；返回 `nodeId`、`version`、`node` |
-| `canvas_node_set_params` | `canvasId`、`nodeId`、`params`；合并更新，返回节点与版本 |
-| `canvas_node_remove` | `canvasId`、`nodeId`；删除节点及关联边 |
-| `canvas_edge_connect` | `canvasId`、`source`、`sourcePort`、`target`、`targetPort`；返回 `edgeId`、`version`、`edge` |
-| `canvas_edge_remove` | `canvasId`、`edgeId`；删除边 |
-| `canvas_render` | `canvasId`、可选 `nodeId` / `force` / `idempotencyKey`；提交生成，立即返回 `jobId` |
-| `job_status` / `job_cancel` | `jobId`；查询或取消生成任务 |
-
-这些方法支持可选绝对路径 `projectPath`，默认取 MCP `--project`，不随桌面当前项目切换；`canvas_node_types` 不需要项目。结果同时放在 `structuredContent` 和 JSON text 中，推荐读取 `structuredContent`。搜索结果提供输入、输出 Schema 及返回类型提示。编辑和生成结果写回会自动刷新对应项目的桌面列表和当前画布，保留节点位置、选择和视图；不会自动打开新画布。
-
-先读取 `(await tools.canvas_node_types({})).structuredContent`，再提交以下异步函数体给 `execute`，创建并生成一张图片：
-
-```javascript
-const data = r => r.structuredContent;
-const { canvasId } = data(await tools.canvas_create({}));
-const input = data(await tools.canvas_node_add({
-  canvasId, type: 'text-input', params: { text: '山间日出，电影感' }
-}));
-const gen = data(await tools.canvas_node_add({ canvasId, type: 'text-to-image' }));
-const output = data(await tools.canvas_node_add({ canvasId, type: 'output' }));
-await tools.canvas_edge_connect({
-  canvasId, source: input.nodeId, sourcePort: 'text', target: gen.nodeId, targetPort: 'text'
-});
-await tools.canvas_edge_connect({
-  canvasId, source: gen.nodeId, sourcePort: 'image', target: output.nodeId, targetPort: 'image'
-});
-await tools.canvas_node_set_params({
-  canvasId, nodeId: input.nodeId, params: { text: '山间日出，薄雾缓慢流动' }
-});
-const job = data(await tools.canvas_render({ canvasId, idempotencyKey: `first-render-${canvasId}` }));
-return { canvasId, inputNodeId: input.nodeId, imageNodeId: gen.nodeId, outputNodeId: output.nodeId, jobId: job.jobId };
-```
-
-在后续 `execute` 中写 `return (await tools.job_status({jobId: '上一步的 jobId'})).structuredContent;` 查询结果；不要在同一脚本里长时间轮询。需要生成视频时，把生成节点改为 `text-to-video`，参数使用 `durationMs`，连接生成节点与 output 的 `video` 端口。生成会调用已配置的真实 Provider；测试使用模拟 Provider。
-
-`canvas_render` **始终执行整张图**，包括图中的其他生成节点。`nodeId` 是缓存绕过的起点：强制重算该节点及其下游，不是“只生成这个节点”，也不会在这个节点暂停。`force: true` 会绕过所有生成节点的缓存；普通继续生成应省略 `nodeId` 和 `force`，让未修改的参考图从缓存复用。
-
-“先参考图，再视频”有两种流程：一次构建 `文本 → text-to-image → image-to-video → output`，会按依赖自动生成图片、再生成视频，中间不等待确认；如果需要先检查参考图，先只创建并生成图片画布，确认图像后再添加视频节点。即使未连接到 output，预先添加的视频生成节点也会被整图执行，不能靠断开输出实现暂停。
-
-图片任务成功且已查看实际参考图后，可在另一次 `execute` 中扩展上述图片画布。把下面三个 ID 替换为客户端保存的返回值；图片生成节点和提示词保持不变：
-
-```javascript
-const canvasId = '上一步的 canvasId';
-const imageNodeId = '上一步的 imageNodeId';
-const outputNodeId = '上一步的 outputNodeId';
-const graph = (await tools.canvas_get({ canvasId })).structuredContent;
-const oldOutputEdge = graph.edges.find(edge => edge.target === outputNodeId);
-const video = (await tools.canvas_node_add({
-  canvasId,
-  type: 'image-to-video',
-  params: {
-    prompt: '保持参考图场景，薄雾缓慢流动，固定机位，无文字',
-    durationMs: 4000, width: 1920, height: 1080
-  }
-})).structuredContent;
-await tools.canvas_edge_connect({
-  canvasId, source: imageNodeId, sourcePort: 'image', target: video.nodeId, targetPort: 'image'
-});
-await tools.canvas_edge_remove({ canvasId, edgeId: oldOutputEdge.id });
-await tools.canvas_edge_connect({
-  canvasId, source: video.nodeId, sourcePort: 'video', target: outputNodeId, targetPort: 'video'
-});
-return (await tools.canvas_render({
-  canvasId, idempotencyKey: `video-stage-v1-${canvasId}`
-})).structuredContent;
-```
-
-`durationMs` 的单位是毫秒，`4000` 表示请求 4 秒。Schema 只校验参数形状，不保证已配置模型支持该时长；一次真实调用中 Seedance 2.5 的参考图视频模式拒绝 3 秒、接受 4 秒，这不是所有模型或模式的能力承诺。遇到 Provider 参数错误需先读 `job_status.error`，修正参数后以新幂等键提交，不能原样重试。视频的宽高会映射为 Provider 支持的比例和分辨率档位；图片的 `sizeMode` 或项目 `imageResolution` 会优先于自定义宽高。需要精确 3 秒成片时，应生成模型支持的时长并在宿主外部裁剪；本 Code Mode 没有裁剪/导出或文件工具。
-
-`job_status` 的父任务 `succeeded` 才表示整图完成。父任务失败时也要检查 `children`：参考图可能已成功生成，可从子任务的 `result.path` 找到；整图失败时它未必已经写回 `canvas_get.cachedResult`。返回的 AssetRef 是本地文件引用，不包含媒体像素；用宿主媒体查看工具检查真实主体，用媒体探测工具检查时长和尺寸，不能把“任务成功”直接等同于“满足用户要求”。
-
-`text-input` 修改 `params.text`；生成节点修改 `params.prompt`，但非空的已连接文本输入优先，应该修改该输入节点。参数更新保留未指定字段并使节点和输出缓存失效；不自动重新生成。构建中的不完整画布可以保存，`canvas_render` 会验证完整图。相同幂等键用于重试同一次提交，会返回原来的任务（包括已失败/成功任务）；仅修改提示词不会让旧键变成新提交。新的生成意图必须使用新键；超时后先查任务状态，不能盲目重复提交。本次不提供画布整体删除、时间线编辑或导出工具。
-
-发送示例：`agent_send_prompt({"prompt":"读取 canvas-cut skill，查看当前项目有哪些画布"})`。随后调用 agent_get_run，以返回的 cursor 作为下次 after，直到 status 离开 running；最终文本见 run.text，完整内容可用 agent_history 获取。get-run/cancel 针对会话的最新运行，runId 用于核对运行身份，不是可查询任意旧运行的参数。
-
-同一会话只允许一个运行；运行中继续发送会返回 MCP isError。提交后连接中断不会自动停止任务，也不要盲目重发，应先查历史确认。停止 Agent 不会取消已提交的生成任务。MCP 使用现有带 token 的本地 IPC，不新增网络监听端口；授权发送 prompt 即允许桌面 Agent 按本地可信模式使用文件和 Shell 工具。
+优先使用 MCP SDK transport，发送中文后用 canvas_get 重读比对。stdout 用于 JSON-RPC，诊断应写 stderr，避免额外文本破坏协议。

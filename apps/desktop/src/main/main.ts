@@ -97,6 +97,7 @@ function createWindow(): BrowserWindow {
     minWidth: 1100,
     minHeight: 720,
     title: 'Canvas Cut',
+    backgroundColor: '#0f1115',
     webPreferences: {
       preload: join(__dirname, '..', 'preload', 'preload.js'),
       contextIsolation: true,

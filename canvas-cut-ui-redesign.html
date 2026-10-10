@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canvas Cut · UI 改版方案</title>
+<style>
+  :root {
+    /* ---- 改版后的设计 Token ---- */
+    --bg-base: #0f1115;        /* 应用底色：冷调，比现版更深一档 */
+    --bg-panel: #16181d;       /* 面板 */
+    --bg-elevated: #1d2026;    /* 浮层 / 卡片 */
+    --bg-input: #10131a;       /* 输入框：比面板更深，形成内凹感 */
+    --border: #262b33;
+    --border-strong: #343b46;
+    --text-primary: #eef1f5;
+    --text-secondary: #9aa3af;
+    --text-muted: #5f6873;
+    --accent: #f6a723;         /* 品牌橙：唯一的高饱和色 */
+    --accent-press: #d98d14;
+    --ok: #34b37e;
+    --radius-card: 12px;
+    --radius-btn: 8px;
+    --font: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: var(--font);
+    background: #0a0c0f;
+    color: var(--text-primary);
+    padding: 48px 40px 80px;
+  }
+  .page { max-width: 1360px; margin: 0 auto; }
+  h1 { font-size: 26px; font-weight: 700; letter-spacing: .5px; }
+  .page-sub { color: var(--text-secondary); margin: 10px 0 36px; font-size: 14px; line-height: 1.7; }
+  h2 { font-size: 18px; margin: 56px 0 8px; }
+  .sec-sub { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }
+
+  /* ================= 改版 mockup 主窗口 ================= */
+  .win {
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 24px 60px rgba(0,0,0,.55);
+    background: var(--bg-base);
+  }
+  /* titlebar */
+  .titlebar {
+    height: 38px; display: flex; align-items: center; gap: 8px;
+    padding: 0 14px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .titlebar .logo {
+    width: 20px; height: 20px; border-radius: 6px;
+    background: var(--accent); color: #141414;
+    display: grid; place-items: center; font-size: 10px; font-weight: 800;
+  }
+  .titlebar .app-name { font-size: 12px; font-weight: 600; }
+  .titlebar .menus { display: flex; gap: 14px; margin-left: 14px; font-size: 12px; color: var(--text-secondary); }
+  .titlebar .win-btns { margin-left: auto; display: flex; gap: 6px; }
+  .titlebar .win-btns i { width: 11px; height: 11px; border-radius: 50%; background: var(--border-strong); display: block; }
+  /* project bar */
+  .projbar {
+    height: 46px; display: flex; align-items: center; gap: 10px;
+    padding: 0 16px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  }
+  .proj-avatar {
+    width: 26px; height: 26px; border-radius: 8px; background: var(--accent);
+    color: #141414; font-weight: 800; font-size: 11px; display: grid; place-items: center;
+  }
+  .proj-name { font-size: 13px; font-weight: 600; }
+  .projbar .spacer { flex: 1; }
+  .btn {
+    border: none; border-radius: var(--radius-btn); font-family: inherit;
+    font-size: 12.5px; font-weight: 600; padding: 7px 14px; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: #141414; }
+  .btn-primary:hover { background: var(--accent-press); }
+  .btn-ghost { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+  .btn-ghost:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+  /* workspace 三栏 */
+  .ws { display: grid; grid-template-columns: 300px 1fr 340px; height: 560px; }
+  .col { min-width: 0; display: flex; flex-direction: column; }
+  .col + .col { border-left: 1px solid var(--border); }
+
+  /* --- 左栏 AI --- */
+  .side { background: var(--bg-panel); padding: 16px; overflow: hidden; }
+  .side-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 700; letter-spacing: 1.2px;
+    color: var(--accent); margin-bottom: 14px;
+  }
+  .side h3 { font-size: 15px; margin-bottom: 4px; }
+  .side .hint { font-size: 12px; color: var(--text-muted); margin-bottom: 16px; }
+  .tpl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tpl {
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    border-radius: var(--radius-card); padding: 12px; cursor: pointer;
+    transition: border-color .15s, transform .15s;
+  }
+  .tpl:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+  .tpl .ico {
+    width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
+    font-size: 15px; margin-bottom: 22px;
+    background: rgba(246,167,35,.10); color: var(--accent);
+  }
+  .tpl .name { font-size: 12.5px; font-weight: 600; }
+  .tpl .meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  /* AI 输入框固定在底部 */
+  .ai-input {
+    margin-top: auto; background: var(--bg-input);
+    border: 1px solid var(--border-strong); border-radius: 10px; padding: 10px 12px;
+  }
+  .ai-input .ph { font-size: 12.5px; color: var(--text-muted); }
+  .ai-input .row { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; }
+  .ai-input .model { font-size: 11px; color: var(--text-muted); }
+  .send {
+    width: 26px; height: 26px; border-radius: 7px; background: var(--accent);
+    color: #141414; display: grid; place-items: center; font-size: 13px; font-weight: 800;
+  }
+
+  /* --- 中栏 assets --- */
+  .center { background: var(--bg-base); }
+  .tabs { display: flex; align-items: center; gap: 4px; padding: 10px 16px 0; }
+  .tab {
+    font-size: 12px; font-weight: 600; letter-spacing: .8px; padding: 8px 10px;
+    color: var(--text-muted); border-bottom: 2px solid transparent; cursor: pointer;
+  }
+  .tab.on { color: var(--text-primary); border-bottom-color: var(--accent); }
+  .toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; }
+  .search {
+    flex: 0 1 260px; background: var(--bg-input); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 12px; font-size: 12.5px; color: var(--text-muted);
+  }
+  .tools { margin-left: auto; display: flex; gap: 4px; }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center;
+    color: var(--text-secondary); font-size: 14px; cursor: pointer;
+  }
+  .icon-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+  .icon-btn.hi { color: var(--accent); }
+  /* 空态：给行动，不给叹息 */
+  .empty {
+    flex: 1; margin: 12px 16px 16px; border: 1.5px dashed var(--border-strong);
+    border-radius: var(--radius-card); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 8px; text-align: center;
+  }
+  .empty .big-ico {
+    width: 52px; height: 52px; border-radius: 14px; background: var(--bg-elevated);
+    border: 1px solid var(--border); display: grid; place-items: center;
+    font-size: 22px; color: var(--text-secondary); margin-bottom: 6px;
+  }
+  .empty .t { font-size: 14px; font-weight: 600; }
+  .empty .d { font-size: 12.5px; color: var(--text-muted); margin-bottom: 10px; }
+  .kbd-tip { font-size: 11.5px; color: var(--text-muted); margin-top: 10px; }
+  .kbd-tip b { color: var(--text-secondary); font-weight: 600; }
+
+  /* --- 右栏 viewer --- */
+  .viewer { background: var(--bg-panel); }
+  .panel-head {
+    padding: 12px 16px; font-size: 11px; font-weight: 700;
+    letter-spacing: 1.2px; color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .viewer-body {
+    flex: 1; margin: 14px; border-radius: var(--radius-card);
+    background: var(--bg-input); border: 1px solid var(--border);
+    display: grid; place-items: center;
+  }
+  .viewer-body .ratio {
+    font-size: 12px; color: var(--text-muted);
+    border: 1px dashed var(--border-strong); border-radius: 8px; padding: 14px 26px;
+  }
+
+  /* --- 底部时间线 --- */
+  .tl { border-top: 1px solid var(--border); background: var(--bg-panel); height: 128px; display: flex; flex-direction: column; }
+  .tl-bar { display: flex; align-items: center; gap: 2px; padding: 6px 10px; }
+  .tl-btn {
+    width: 28px; height: 26px; border-radius: 6px; display: grid; place-items: center;
+    color: var(--text-secondary); font-size: 12px;
+  }
+  .tl-btn:hover { background: var(--bg-elevated); color: var(--text-primary); }
+  .tl-btn.sep { width: 1px; height: 16px; background: var(--border); margin: 0 6px; }
+  .tc { margin-left: auto; font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .tc b { color: var(--text-primary); font-weight: 600; }
+  .tl-track { flex: 1; margin: 4px 12px 12px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); display: grid; place-items: center; font-size: 12px; color: var(--text-muted); }
+  .tl-track b { color: var(--text-secondary); font-weight: 600; }
+
+  /* ================= 规范区 ================= */
+  .spec-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .spec-card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 18px; }
+  .spec-card h4 { font-size: 13px; margin-bottom: 14px; color: var(--text-secondary); letter-spacing: .5px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; }
+  .sw { width: 86px; }
+  .sw .chip { height: 40px; border-radius: 8px; border: 1px solid rgba(255,255,255,.08); }
+  .sw .nm { font-size: 11px; margin-top: 5px; }
+  .sw .cd { font-size: 10px; color: var(--text-muted); font-family: Consolas, monospace; }
+  .type-row { display: flex; align-items: baseline; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .type-row:last-child { border-bottom: none; }
+  .type-row .lbl { font-size: 11px; color: var(--text-muted); }
+  .r-demo { display: flex; gap: 10px; align-items: center; }
+  .r-box { background: var(--bg-elevated); border: 1px solid var(--border-strong); width: 44px; height: 44px; }
+  .r-lbl { font-size: 11px; color: var(--text-muted); }
+
+  /* ================= 问题清单 ================= */
+  .issues { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }
+  .issue { background: var(--bg-panel); border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 10px; padding: 14px 16px; }
+  .issue .tag { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 1px; padding: 2px 8px; border-radius: 5px; margin-bottom: 8px; }
+  .tag.p0 { background: rgba(230,90,70,.15); color: #e86a55; }
+  .tag.p1 { background: rgba(246,167,35,.14); color: var(--accent); }
+  .tag.p2 { background: rgba(90,140,220,.14); color: #6fa3e8; }
+  .issue .t { font-size: 13.5px; font-weight: 600; margin-bottom: 5px; }
+  .issue .d { font-size: 12.5px; color: var(--text-secondary); line-height: 1.65; }
+  .issue .d b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Canvas Cut · UI 改版方案</h1>
+  <p class="page-sub">对照现有界面（apps/desktop/src/renderer/style.css）的重新设计稿。核心思路：<b>建立层次、收敛彩色、空态给行动、主 CTA 显性化</b>。下方 mockup 全部用改版 token 绘制，可直接对照取值。</p>
+
+  <!-- ===================== 改版 MOCKUP ===================== -->
+  <h2>① 改版后的主界面</h2>
+  <p class="sec-sub">「My Assets」首屏 · 三栏 + 时间线。与现版逐区域对照：色阶、卡片、空态、CTA。</p>
+
+  <div class="win">
+    <div class="titlebar">
+      <div class="logo">CC</div>
+      <span class="app-name">Canvas Cut</span>
+      <div class="menus"><span>File</span><span>Edit</span><span>View</span><span>Window</span><span>Help</span></div>
+      <div class="win-btns"><i></i><i></i><i></i></div>
+    </div>
+    <div class="projbar">
+      <div class="proj-avatar">CC</div>
+      <span class="proj-name">Demo Project</span>
+      <div class="spacer"></div>
+      <button class="btn btn-ghost">导入媒体</button>
+      <button class="btn btn-primary">+ New canvas</button>
+    </div>
+    <div class="ws">
+      <!-- 左栏 -->
+      <div class="col side">
+        <div class="side-tag">◆ AI STUDIO</div>
+        <h3>今天想创作什么？</h3>
+        <div class="hint">选择模板，或直接在下方描述你的想法</div>
+        <div class="tpl-grid">
+          <div class="tpl"><div class="ico">👤</div><div class="name">Talking Head</div><div class="meta">口播剪辑</div></div>
+          <div class="tpl"><div class="ico">✦</div><div class="name">Motion Graphics</div><div class="meta">动态图形</div></div>
+          <div class="tpl"><div class="ico">▦</div><div class="name">Seedance 2.5</div><div class="meta">视频生成</div></div>
+          <div class="tpl"><div class="ico">▶</div><div class="name">Product Promo</div><div class="meta">产品宣传</div></div>
+        </div>
+        <div class="ai-input">
+          <div class="ph">描述你想生成的视频，例如「山间日出，电影感…」</div>
+          <div class="row">
+            <span class="model">模型：Seedance 2.5</span>
+            <div class="send">↑</div>
+          </div>
+        </div>
+      </div>
+      <!-- 中栏 -->
+      <div class="col center">
+        <div class="tabs">
+          <span class="tab on">MY ASSETS</span><span class="tab">LIBRARY</span><span class="tab">CANVAS</span><span class="tab">TRANSCRIPT</span>
+        </div>
+        <div class="toolbar">
+          <div class="search">🔍 搜索素材</div>
+          <div class="tools">
+            <div class="icon-btn hi" title="导入">↥</div>
+            <div class="icon-btn" title="网格视图">▦</div>
+            <div class="icon-btn" title="列表视图">≡</div>
+            <div class="icon-btn" title="排序">⇅</div>
+            <div class="icon-btn" title="筛选">▽</div>
+          </div>
+        </div>
+        <div class="empty">
+          <div class="big-ico">🖼</div>
+          <div class="t">导入你的第一批素材</div>
+          <div class="d">拖放视频 / 图片到此处，或点击下方按钮</div>
+          <button class="btn btn-primary">导入媒体</button>
+          <div class="kbd-tip">支持 <b>MP4 / MOV / PNG / JPG</b> · 也可以让 Agent 自动生成</div>
+        </div>
+      </div>
+      <!-- 右栏 -->
+      <div class="col viewer">
+        <div class="panel-head"><span>VIEWER</span><span style="letter-spacing:0">16:9 · 1080p</span></div>
+        <div class="viewer-body"><div class="ratio">预览区域 · 16:9</div></div>
+      </div>
+    </div>
+    <!-- 时间线 -->
+    <div class="tl">
+      <div class="tl-bar">
+        <div class="tl-btn" title="添加">+</div>
+        <div class="tl-btn sep"></div>
+        <div class="tl-btn" title="上一帧">⏮</div>
+        <div class="tl-btn" title="播放">▶</div>
+        <div class="tl-btn" title="下一帧">⏭</div>
+        <div class="tl-btn sep"></div>
+        <div class="tl-btn" title="分割">✂</div>
+        <div class="tl-btn" title="链接">🔗</div>
+        <div class="tc"><b>00:00:00</b> / 00:00:00</div>
+      </div>
+      <div class="tl-track"><b>时间线为空</b> — 导入素材或从画布同步片段后开始剪辑</div>
+    </div>
+  </div>
+
+  <!-- ===================== 问题清单 ===================== -->
+  <h2>② 现版问题与优先级</h2>
+  <p class="sec-sub">基于截图（cc_win.png / after_new_canvas4.png / test_transcript.png）与 style.css 逐条核对。</p>
+  <div class="issues">
+    <div class="issue"><span class="tag p0">P0 · 层次</span>
+      <div class="t">灰阶差距太小，面板边界靠猜</div>
+      <div class="d">现版 <b>#141414 → #1a1a1a → #222226</b> 三级背景几乎不可辨，界面糊成一片灰。改版拉开为 <b>#0f1115 → #16181d → #1d2026</b> 并整体偏冷，输入框反而更暗（#10131a）形成「内凹」隐喻，层次一眼可读。</div>
+    </div>
+    <div class="issue"><span class="tag p0">P0 · 主 CTA</span>
+      <div class="t">核心按钮不显眼，橙色乱用</div>
+      <div class="d">「New canvas」是橙字灰底，视觉重量还不如旁边的上传图标（也是橙的）。改版：<b>主 CTA 一律实心橙底 + 深色字</b>，且上移到项目栏常驻；橙色只留给 CTA 和当前态，其余图标回归灰阶。</div>
+    </div>
+    <div class="issue"><span class="tag p0">P0 · 信息架构</span>
+      <div class="t">Agent 产品却看不到 Agent 入口</div>
+      <div class="d">首屏左栏被 6 张模板卡占满，<b>AI 对话输入框完全不可见</b>——这是产品的核心能力。改版：模板压缩为 4 张，AI 输入框固定在左栏底部，并加「模型名」提示，让「对话创作」成为第一动线。</div>
+    </div>
+    <div class="issue"><span class="tag p1">P1 · 空态</span>
+      <div class="t">三个空态三种态度</div>
+      <div class="d">Assets 是孤零零文件夹图标（无按钮）、Canvas 是「No canvas yet」（有按钮）、Viewer 只有一行被截断的「Drop media…」。改版统一空态公式：<b>图标 + 一句价值描述 + 一个主按钮 + 一条辅助提示</b>。</div>
+    </div>
+    <div class="issue"><span class="tag p1">P1 · 色彩</span>
+      <div class="t">模板卡六种高饱和色，像六个产品</div>
+      <div class="d">紫 / 蓝 / 橙 / 绿 / 粉 / 青竖条互相打架，且都和品牌橙冲突。改版：<b>彩色只保留品牌橙一处</b>，模板图标统一「10% 橙底 + 橙色线性图标」，靠文案区分业务，整体立刻安静、高级。</div>
+    </div>
+    <div class="issue"><span class="tag p1">P1 · 时间线</span>
+      <div class="t">空项目显示 40 分钟假刻度</div>
+      <div class="d">项目里一个片段都没有，刻度却从 00:00:00 排到 00:40:00，是纯噪音。改版：空态时间线只显示<b>引导文案 + 关键动作</b>，有素材后再渲染刻度。</div>
+    </div>
+    <div class="issue"><span class="tag p2">P2 · 细节</span>
+      <div class="t">图标语言不统一、无 tooltip</div>
+      <div class="d">侧栏卡是彩色线性图标、顶栏是单色、时间线又是另一种描边风格；工具条 5 个 icon-only 按钮没有 tooltip。改版：<b>统一 1.5px 线性图标</b>，所有 icon-only 按钮加 title/tooltip（见 mockup 悬停）。</div>
+    </div>
+    <div class="issue"><span class="tag p2">P2 · 标题栏</span>
+      <div class="t">titlebar 蓝紫色与主界面断层</div>
+      <div class="d">截图中原生标题栏是蓝黑色，与 body 的 #141414 明显两个世界。改版：自绘 titlebar 或把原生栏颜色对齐到 <b>#16181d</b>，顶栏与内容用 1px 边框分隔即可。</div>
+    </div>
+  </div>
+
+  <!-- ===================== 设计 Token ===================== -->
+  <h2>③ 改版设计 Token（可直接替换 style.css 的 :root）</h2>
+  <p class="sec-sub">色板 · 字阶 · 圆角。命名与现版变量一一对应，迁移成本最低。</p>
+  <div class="spec-grid">
+    <div class="spec-card">
+      <h4>COLOR · 中性色阶（冷调）</h4>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#0f1115"></div><div class="nm">bg-primary</div><div class="cd">#0f1115</div></div>
+        <div class="sw"><div class="chip" style="background:#16181d"></div><div class="nm">bg-panel</div><div class="cd">#16181d</div></div>
+        <div class="sw"><div class="chip" style="background:#1d2026"></div><div class="nm">bg-elevated</div><div class="cd">#1d2026</div></div>
+        <div class="sw"><div class="chip" style="background:#10131a"></div><div class="nm">bg-input</div><div class="cd">#10131a</div></div>
+        <div class="sw"><div class="chip" style="background:#262b33"></div><div class="nm">border</div><div class="cd">#262b33</div></div>
+        <div class="sw"><div class="chip" style="background:#eef1f5"></div><div class="nm">text-primary</div><div class="cd">#eef1f5</div></div>
+      </div>
+    </div>
+    <div class="spec-card">
+      <h4>COLOR · 强调色（唯一高饱和）</h4>
+      <div class="swatches">
+        <div class="sw"><div class="chip" style="background:#f6a723"></div><div class="nm">accent</div><div class="cd">#f6a723</div></div>
+        <div class="sw"><div class="chip" style="background:#d98d14"></div><div class="nm">accent-press</div><div class="cd">#d98d14</div></div>
+        <div class="sw"><div class="chip" style="background:rgba(246,167,35,.1)"></div><div class="nm">accent-soft</div><div class="cd">orange 10%</div></div>
+        <div class="sw"><div class="chip" style="background:#34b37e"></div><div class="nm">ok</div><div class="cd">#34b37e</div></div>
+        <div class="sw"><div class="chip" style="background:#e86a55"></div><div class="nm">error</div><div class="cd">#e86a55</div></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--text-muted);margin-top:12px;line-height:1.7">规则：实心橙 = 主操作（每屏 ≤1 个）；10% 橙 = 选中/品牌痕迹；绿/红只用于状态，不做装饰。</div>
+    </div>
+    <div class="spec-card">
+      <h4>TYPE & RADIUS · 字阶与圆角</h4>
+      <div class="type-row"><span style="font-size:15px;font-weight:700">面板标题 15/700</span><span class="lbl">15px</span></div>
+      <div class="type-row"><span style="font-size:12.5px;font-weight:600">卡片标题 12.5/600</span><span class="lbl">12.5px</span></div>
+      <div class="type-row"><span style="font-size:11px;letter-spacing:1.2px;font-weight:700;color:var(--text-secondary)">区块标签 11/700/LS1.2</span><span class="lbl">11px</span></div>
+      <div class="type-row"><span style="font-size:12px;color:var(--text-muted)">辅助文字 12/400</span><span class="lbl">12px</span></div>
+      <div class="r-demo" style="margin-top:12px">
+        <div class="r-box" style="border-radius:12px"></div>
+        <div class="r-box" style="border-radius:8px"></div>
+        <div class="r-box" style="border-radius:6px"></div>
+        <div class="r-lbl">卡片 12 · 按钮/输入 8 · 小件 6<br>间距一律 4 的倍数</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

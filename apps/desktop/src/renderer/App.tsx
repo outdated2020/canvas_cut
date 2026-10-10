@@ -909,7 +909,7 @@ export function App() {
               <div className="template-grid">
                 {templateCards.map((card) => (
                   <button key={card.title} className="template-card" onClick={() => useTemplatePrompt(card.prompt)} title={card.prompt}>
-                    <span className="template-thumb" style={{ background: card.gradient }}>
+                    <span className="template-thumb">
                       <Icon name={card.icon} size={20} />
                       {card.pro && <span className="pro-badge">PRO</span>}
                     </span>
@@ -993,7 +993,7 @@ export function App() {
                       />
                     </span>
                     <span className="toolbar-group">
-                      <button className={`ibtn ${assetView === 'grid' ? 'active' : ''}`} title="Upload" onClick={importAssets}><Icon name="upload" size={15} /></button>
+                      <button className="ibtn" title="Upload" onClick={importAssets}><Icon name="upload" size={15} /></button>
                       <button className={`ibtn ${assetView === 'grid' ? 'active' : ''}`} title="Grid view" onClick={() => setAssetView('grid')}><Icon name="grid" size={15} /></button>
                       <button className={`ibtn ${assetView === 'list' ? 'active' : ''}`} title="List view" onClick={() => setAssetView('list')}><Icon name="list" size={15} /></button>
                       <button className={`ibtn ${sortActive ? 'active' : ''}`} title="Sort" onClick={() => setSortActive(!sortActive)}><Icon name="sort" size={15} /></button>
@@ -1004,8 +1004,9 @@ export function App() {
                     {filteredAssets.length === 0 ? (
                       <div className="empty-state-static">
                         <Icon name="folder" size={44} />
-                        <p className="empty-title">This bin is empty</p>
+                        <p className="empty-title">Import your first media</p>
                         <p className="empty-sub">Import media or drag clips here.</p>
+                        <button className="empty-cta" onClick={importAssets}>Import media</button>
                       </div>
                     ) : assetView === 'grid' ? (
                       <div className="asset-grid">
@@ -1072,12 +1073,18 @@ export function App() {
             </>
           ) : (
             <>
+              <div className="panel-tabs">
+                <button onClick={() => { setAssetTab('my-assets'); setCenterTab('assets'); }}>My Assets</button>
+                <button onClick={() => { setAssetTab('library'); setCenterTab('assets'); }}>Library</button>
+                <button className="active" onClick={() => setCenterTab('canvas')}>Canvas</button>
+                <button onClick={() => { setAssetTab('transcript'); setCenterTab('assets'); }}>Transcript</button>
+              </div>
               <div className="canvas-toolbar">
-                <button className="ibtn" title="Back" onClick={() => { setCenterTab('assets'); setCanvas(null); }}><Icon name="chevronLeft" size={15} /></button>
-                <button className="ibtn" title={canvasExpanded ? 'Shrink' : 'Expand'} onClick={() => setCanvasExpanded(!canvasExpanded)}><Icon name={canvasExpanded ? 'fit' : 'expand'} size={15} /></button>
-                <button className="tb-text" onClick={createBlankCanvas} disabled={!project}><Icon name="plus" size={13} /> New canvas</button>
+                <button className="tb-primary" onClick={createBlankCanvas} disabled={!project}><Icon name="plus" size={13} /> New canvas</button>
                 {canvas && (
                   <>
+                    <button className="ibtn" title="Back" onClick={() => { setCenterTab('canvas'); setCanvas(null); setCanvasExpanded(false); }}><Icon name="chevronLeft" size={15} /></button>
+                    <button className="ibtn" title={canvasExpanded ? 'Shrink' : 'Expand'} onClick={() => setCanvasExpanded(!canvasExpanded)}><Icon name={canvasExpanded ? 'fit' : 'expand'} size={15} /></button>
                     <select value={newNodeType} onChange={(event) => setNewNodeType(event.target.value)}>
                       <option value="text-input">Text Input</option>
                       <option value="text-to-image">Text to Image</option>
@@ -1109,11 +1116,6 @@ export function App() {
                   />
                 ) : canvases.length > 0 ? (
                   <div className="canvas-grid">
-                    <button className="canvas-card canvas-card-new" onClick={createBlankCanvas}>
-                      <span className="canvas-card-icon"><Icon name="plus" size={18} /></span>
-                      <span className="canvas-card-title">New canvas</span>
-                      <span className="canvas-card-meta">Start from a blank flow</span>
-                    </button>
                     {canvases.map((item, index) => (
                       <div key={item.id} className="canvas-card-wrap">
                       <button className="canvas-card" onClick={() => openCanvas(item.id)}>
@@ -1132,7 +1134,7 @@ export function App() {
                     <Icon name="spark" size={40} />
                     <p className="empty-title">No canvas yet</p>
                     <p className="empty-sub">Create a canvas to start building your flow.</p>
-                    <button className="tb-text accent" onClick={createBlankCanvas}><Icon name="plus" size={13} /> New canvas</button>
+                    <button className="empty-cta" onClick={createBlankCanvas}><Icon name="plus" size={13} /> New canvas</button>
                   </div>
                 )}
               </div>
@@ -1196,7 +1198,7 @@ export function App() {
               <button className="ibtn" title="Unlink"><Icon name="unlink" size={14} /></button>
               <button className="ibtn" title="Marker"><Icon name="marker" size={14} /></button>
             </div>
-            <button onClick={async () => {
+            <button className="tb-text" onClick={async () => {
               try { await invoke('timeline.refresh-canvases', { path: projectPath }); await refreshTimeline(); }
               catch (error) { addLog(String(error)); }
             }}>Update canvas clips</button>
