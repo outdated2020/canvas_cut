@@ -10,11 +10,13 @@ import {
   ProjectSettings,
   TextToImageRequest,
   TextToVideoRequest,
-  VideoToVideoRequest
+  VideoToVideoRequest,
+  VolcengineConfig
 } from '../types';
 import { canonicalJson, sha256 } from '../hash';
 import { CanvasCutError, ERROR_CODES } from '../errors';
 import { findNode, incomingEdges, topologicalSort, validateGraph } from './graph';
+import { buildWhiteModelRequest, type WhiteModelRequest } from './white-model';
 
 export type ResolvedValue = string | AssetRef;
 
@@ -28,6 +30,17 @@ export interface CacheLookup {
 export interface CanvasPlanOptions {
   force?: boolean;
   nodeId?: string;
+  modelDefaults?: Pick<VolcengineConfig, 'imageModel' | 'videoModel'>;
+}
+
+function resolveNodeModel(node: CanvasNode, defaults?: CanvasPlanOptions['modelDefaults']): string | undefined {
+  if (!providerGenerationType(node)) return undefined;
+  const model = node.params.model;
+  if (model != null && typeof model !== 'string') {
+    throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, `Node ${node.id} model must be a string or null`);
+  }
+  return (model as string | null | undefined)?.trim() ||
+    (node.type.endsWith('-to-video') ? defaults?.videoModel : defaults?.imageModel)?.trim() || undefined;
 }
 
 export function resolveInputs(
@@ -104,7 +117,8 @@ export function resolveAsset(
 export function nodeCacheKey(
   node: CanvasNode,
   inputs: ResolvedInputs,
-  settings: ProjectSettings
+  settings: ProjectSettings,
+  modelDefaults?: CanvasPlanOptions['modelDefaults']
 ): string {
   const resolution = `${settings.width}x${settings.height}@${settings.fps}`;
   const canonicalInputs = Object.keys(inputs)
@@ -122,7 +136,7 @@ export function nodeCacheKey(
   return sha256(
     [
       node.type,
-      canonicalJson(node.params),
+      canonicalJson(providerGenerationType(node) ? { ...node.params, model: resolveNodeModel(node, modelDefaults) } : node.params),
       canonicalJson(canonicalInputs),
       resolution
     ].join('\n')
@@ -149,13 +163,17 @@ export function providerGenerationType(node: CanvasNode): GenerationType | null 
 export function buildProviderRequest(
   node: CanvasNode,
   inputs: ResolvedInputs,
-  settings: ProjectSettings
+  settings: ProjectSettings,
+  modelDefaults?: CanvasPlanOptions['modelDefaults']
 ):
   | TextToImageRequest
   | TextToVideoRequest
   | ImageToImageRequest
   | ImageToVideoRequest
-  | VideoToVideoRequest {
+  | VideoToVideoRequest
+  | WhiteModelRequest {
+  if (node.type === 'white-model-video') return buildWhiteModelRequest(node.params, settings);
+  const model = resolveNodeModel(node, modelDefaults);
   const prompt = resolvePrompt(node, inputs);
   const negativePrompt = node.params.negativePrompt as string | undefined;
   const seed = node.params.seed as number | undefined;
@@ -168,6 +186,7 @@ export function buildProviderRequest(
   switch (node.type) {
     case 'text-to-image':
       return {
+        model,
         prompt,
         negativePrompt,
         width: node.params.width !== undefined ? width : undefined,
@@ -178,6 +197,7 @@ export function buildProviderRequest(
       };
     case 'text-to-video':
       return {
+        model,
         prompt,
         negativePrompt,
         durationMs,
@@ -189,6 +209,7 @@ export function buildProviderRequest(
       };
     case 'image-to-image':
       return {
+        model,
         image: resolveAsset(node, inputs, 'image'),
         prompt,
         negativePrompt,
@@ -200,6 +221,7 @@ export function buildProviderRequest(
       };
     case 'image-to-video':
       return {
+        model,
         image: resolveAsset(node, inputs, 'image'),
         prompt,
         negativePrompt,
@@ -212,6 +234,7 @@ export function buildProviderRequest(
       };
     case 'video-to-video':
       return {
+        model,
         video: resolveAsset(node, inputs, 'video'),
         prompt,
         mode: (node.params.mode as 'edit' | 'extend') ?? 'edit',
@@ -275,7 +298,8 @@ export async function buildCanvasRenderPlan(
       }
       continue;
     }
-    const cacheKey = nodeCacheKey(node, inputs, settings);
+    if (node.type === 'white-model-video') buildWhiteModelRequest(node.params, settings);
+    const cacheKey = nodeCacheKey(node, inputs, settings, options.modelDefaults);
     let cacheHit = false;
     let cached: AssetRef | undefined;
     const shouldForce = Boolean(options.force) || forceSet.has(node.id);
@@ -300,6 +324,7 @@ export async function buildCanvasRenderPlan(
   }
 
   return {
+    modelDefaults: options.modelDefaults ? { ...options.modelDefaults } : undefined,
     canvasId: graph.id,
     graphHash: graph.graphHash,
     nodes: graph.nodes,
@@ -319,6 +344,7 @@ export interface GenerationExecutor {
       | ImageToImageRequest
       | ImageToVideoRequest
       | VideoToVideoRequest
+      | WhiteModelRequest
   ): Promise<AssetRef>;
   renderCanvasReference(canvasId: string): Promise<AssetRef>;
 }
@@ -366,14 +392,14 @@ export async function executeCanvasPlan(
       continue;
     }
 
-    const cacheKey = nodeCacheKey(node, inputs, settings);
+    const cacheKey = nodeCacheKey(node, inputs, settings, plan.modelDefaults);
     const planStep = plan.childJobs.find((step) => step.nodeId === node.id);
     const cached = !planStep?.force && cache ? await cache.get(cacheKey) : undefined;
     let asset: AssetRef;
     if (cached) {
       asset = cached;
     } else {
-      const request = buildProviderRequest(node, inputs, settings);
+      const request = buildProviderRequest(node, inputs, settings, plan.modelDefaults);
       asset = await executor.execute(node, request);
       if (cache?.put) {
         await cache.put(cacheKey, asset);

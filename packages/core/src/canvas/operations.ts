@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import Ajv from 'ajv';
 import { CANVAS_API, nodeParamsSchema, nodeTypeCatalog } from './api';
-import { addNode, connectEdge, createCanvas, disconnectEdge, findNode, removeNode, setNodeParams } from './graph';
+import { addNode, connectEdge, createCanvas, disconnectEdge, findNode, removeNode, renameCanvas, setNodeParams } from './graph';
 import type { NodeType } from '../types';
 import { NODE_DEFINITIONS } from './registry';
+import { buildWhiteModelRequest } from './white-model';
 import { ProjectStore } from '../project/project-store';
 import { withProjectLock } from '../fs/lock';
 import { CanvasCutError, ERROR_CODES } from '../errors';
@@ -35,15 +36,19 @@ export class CanvasOperations {
     if (method === 'canvas.list') {
       const canvases = await Promise.all((await store.listCanvasFiles()).map(async file => {
         const canvas = await store.readCanvas(file.slice(0, -5));
-        return { id: canvas.id, canvasId: canvas.id, version: canvas.version, graphHash: canvas.graphHash, nodeCount: canvas.nodes.length };
+        return { id: canvas.id, canvasId: canvas.id, ...(canvas.name === undefined ? {} : { name: canvas.name }), version: canvas.version, graphHash: canvas.graphHash, nodeCount: canvas.nodes.length };
       }));
       return { canvases };
     }
     const result = await withProjectLock(store.paths.root, async () => {
-      const graph = method === 'canvas.create' ? createCanvas(randomUUID()) : await store.readCanvas(String(input.canvasId));
+      const graph = method === 'canvas.create' ? createCanvas(randomUUID(), input.name as string | undefined) : await store.readCanvas(String(input.canvasId));
       let result: Record<string, unknown>;
       switch (method) {
         case 'canvas.create': result = { canvasId: graph.id, canvas: graph }; break;
+        case 'canvas.rename': {
+          renameCanvas(graph, input.name);
+          result = { canvasId: graph.id, name: graph.name }; break;
+        }
         case 'canvas.node.add': {
           const type = input.type as NodeType, params = input.params as Record<string, unknown> ?? {};
           this.validateParams(type, params);
@@ -73,5 +78,6 @@ export class CanvasOperations {
   private validateParams(type: string, params: unknown) {
     const validate = paramsValidators.get(type);
     if (!validate || !validate(params)) throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, `Invalid ${type} parameters: ${validate ? ajv.errorsText(validate.errors) : 'unknown node type'}`);
+    if (type === 'white-model-video') buildWhiteModelRequest(params as Record<string, unknown>);
   }
 }

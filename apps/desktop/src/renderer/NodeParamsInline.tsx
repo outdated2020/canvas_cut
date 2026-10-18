@@ -1,14 +1,20 @@
 import { useEffect, useState } from 'react';
+import { WhiteModelParams } from './WhiteModelParams';
+import { NodeModelSelect } from './NodeModelSelect';
 
 type RecordValue = Record<string, any>;
 export const nodeLabels: Record<string, string> = {
   'text-input': '文本输入', 'image-input': '图片输入', 'video-input': '视频输入',
   'canvas-reference': '画布引用', 'text-to-image': '文生图', 'image-to-image': '图生图',
-  'text-to-video': '文生视频', 'image-to-video': '图生视频', 'video-to-video': '视频转视频', output: '输出'
+  'text-to-video': '文生视频', 'image-to-video': '图生视频', 'video-to-video': '视频转视频', 'white-model-video': '白模视频', output: '输出'
 };
-export const isGenerationNode = (type: string) => ['text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'video-to-video'].includes(type);
+export const isGenerationNode = (type: string) => ['text-to-image', 'image-to-image', 'text-to-video', 'image-to-video', 'video-to-video', 'white-model-video'].includes(type);
 
-export function NodeParamsInline({ nodeId, type, params, config, assets = [], canvases = [], result, onSave }: {
+export function NodeParamsInline(props: Parameters<typeof StandardNodeParamsInline>[0]) {
+  return props.type === 'white-model-video' ? <WhiteModelParams nodeId={props.nodeId} params={props.params} onSave={props.onSave} /> : <StandardNodeParamsInline {...props} />;
+}
+
+function StandardNodeParamsInline({ nodeId, type, params, config, assets = [], canvases = [], result, onSave }: {
   nodeId: string; type: string; params: RecordValue; config?: RecordValue | null;
   assets?: RecordValue[]; canvases?: RecordValue[]; result?: RecordValue;
   onSave: (id: string, params: RecordValue) => Promise<void> | void;
@@ -27,7 +33,8 @@ export function NodeParamsInline({ nodeId, type, params, config, assets = [], ca
   const video = type.endsWith('-to-video');
   const assetType = type === 'image-input' || type === 'image-to-image' || type === 'image-to-video' ? 'image' : 'video';
   const usesAsset = ['image-input', 'video-input', 'image-to-image', 'image-to-video', 'video-to-video'].includes(type);
-  const model = config?.provider?.volcengine?.[video ? 'videoModel' : 'imageModel'];
+  const defaultModel = config?.provider?.volcengine?.[video ? 'videoModel' : 'imageModel'];
+  const model = typeof draft.model === 'string' && draft.model.trim() ? draft.model.trim() : defaultModel;
   function change(key: string, value: unknown) {
     setDraft(previous => ({ ...previous, [key]: value }));
     setMessage('');
@@ -80,7 +87,11 @@ export function NodeParamsInline({ nodeId, type, params, config, assets = [], ca
       </select>
     </label> : null}
     {generating ? <>
-      <div className="params-toolbar"><span className="node-model-info" title={model}>模型：{model || '未配置，请在 Settings 中设置'}</span></div>
+      <NodeModelSelect nodeId={nodeId} type={type} providerId={config?.provider?.default ?? 'volcengine'}
+        value={draft.model} savedModel={params.model} defaultModel={defaultModel} onChange={value => change('model', value)} />
+      <div className="params-toolbar"><span className="node-model-info" title={model}>
+        {typeof draft.model === 'string' && draft.model.trim() ? '节点模型' : '项目默认'}：{model || '未配置，请在 Settings 中设置'}
+      </span></div>
       <div className="params-section"><div className="param-label">画幅比例</div><div className="param-tabs">
         {ratios.map(item => <button type="button" key={item.label} aria-pressed={ratio !== null && Math.abs(ratio - item.w / item.h) < 0.01}
           className={`param-tab ${ratio !== null && Math.abs(ratio - item.w / item.h) < 0.01 ? 'active' : ''}`}

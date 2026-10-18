@@ -43,6 +43,14 @@ test('CLI canvas graph and dry-run render', async () => {
     runCli(['project', 'init', '--name', 'Canvas Test', '--path', dir, '--json']);
     const created = runCli(['canvas', 'create', '--name', 'Test', '--project', dir, '--json']);
     const canvasId = created.data.canvasId;
+    const cliEnv = { ...process.env, APPDATA: dir };
+    assert.equal(runCli(['canvas', 'get', canvasId, '--project', dir, '--json']).data.name, 'Test');
+    const renamed = runCli(['canvas', 'rename', canvasId, '--name', '  中文画布  ', '--project', dir, '--json'], { env: cliEnv });
+    assert.equal(renamed.data.name, '中文画布');
+    assert.equal(runCli(['canvas', 'list', '--project', dir, '--json']).data[0].name, '中文画布');
+    assert.equal(runCli(['canvas', 'get', canvasId, '--project', dir, '--json']).data.name, '中文画布');
+    const invalidName = spawnSync(process.execPath, [cliPath, 'canvas', 'rename', canvasId, '--name', '   ', '--project', dir, '--json'], { encoding: 'utf8', env: cliEnv });
+    assert.equal(JSON.parse(invalidName.stdout).error.code, 'INVALID_PARAMS');
 
     const text = runCli([
       'canvas', 'node', 'add', '--canvas', canvasId, '--type', 'text-input',

@@ -1,12 +1,15 @@
 import { NODE_DEFINITIONS, getRequiredInputPorts } from './registry';
+import { defaultWhiteModelParams, whiteModelParamsSchema } from './white-model';
 
 export const idSchema = { type: 'string', minLength: 1, maxLength: 200, pattern: '^[a-zA-Z0-9_-]+$' };
 const str = { type: 'string' }, integer = { type: 'integer', minimum: 1 };
+const canvasName = { type: 'string', minLength: 1, pattern: '\\S', description: 'Display name; trimmed to 1–100 characters, with no line breaks or control characters. Does not affect render content or caches.' };
 export function objectSchema(properties: Record<string, unknown>, required: string[] = []) {
   return { type: 'object', properties, required, additionalProperties: false };
 }
 const assetSchema = { ...objectSchema({ id: str, path: str, type: { enum: ['image', 'video', 'audio'] }, sizeBytes: { type: 'number', minimum: 0 }, width: integer, height: integer, durationMs: { type: 'number', minimum: 0 } }, ['id', 'path', 'type', 'sizeBytes']), additionalProperties: true };
 const generation = {
+  model: { type: ['string', 'null'], description: 'Model or endpoint ID for this node. A non-empty value overrides the project image/video model. Empty, whitespace-only or null restores the project default. Uses configured provider credentials and base URL; model capabilities are provider-dependent.' },
   prompt: { ...str, description: 'Fallback generation prompt. Non-empty connected text-input content takes precedence, so edit that input node instead when connected.' }, negativePrompt: str, seed: { type: 'integer' },
   width: { ...integer, description: 'Requested pixel width. For video, width/height select the provider aspect ratio and resolution tier; exact output dimensions are provider-dependent. For images, sizeMode or configured imageResolution can override explicit dimensions.' },
   height: { ...integer, description: 'Requested pixel height. Example: width=1920,height=1080 requests 16:9 video. Verify actual media dimensions; the provider may map these to a supported resolution tier.' },
@@ -22,6 +25,7 @@ export function nodeParamsSchema(type: string) {
   const properties = type === 'text-input' ? { text: { ...str, description: 'Text sent to downstream text ports; use this field, not prompt. Unicode is supported when the client sends UTF-8 JSON-RPC. Read back with canvas_get to confirm Chinese has not been replaced by question marks before rendering.' } }
     : ['image-input', 'video-input'].includes(type) ? { asset: optionalAsset }
     : type === 'canvas-reference' ? { canvasId: idSchema }
+    : type === 'white-model-video' ? whiteModelParamsSchema
     : type === 'output' ? {} : { ...generation, asset: optionalAsset };
   // Preserve application/provider extension parameters; validate known fields.
   return { type: 'object', properties, additionalProperties: true };
@@ -29,10 +33,12 @@ export function nodeParamsSchema(type: string) {
 export function nodeTypeCatalog() {
   return { types: Object.values(NODE_DEFINITIONS).map(def => ({
     ...def, requiredInputPorts: getRequiredInputPorts(def.type), paramsSchema: nodeParamsSchema(def.type),
-    exampleParams: def.type === 'text-input' ? { text: '山间日出，电影感' }
+    exampleParams: def.type === 'white-model-video' ? defaultWhiteModelParams()
+      : def.type === 'text-input' ? { text: '山间日出，电影感' }
       : def.generationType ? { prompt: '山间日出，电影感', ...(def.generationType.endsWith('video') ? { durationMs: 5000 } : {}) }
       : def.type === 'canvas-reference' ? { canvasId: 'existing-canvas-id' } : {},
-    notes: ['image-input', 'video-input', 'image-to-image', 'image-to-video', 'video-to-video'].includes(def.type)
+    notes: def.type === 'white-model-video' ? 'Locally render white box/sphere/cylinder primitives with linear camera/object keyframes into an MP4 using three.js and FFmpeg. No provider/API key required. Connect video output to output, video-to-video, or timeline. Rotation uses degrees; duration rounds to the nearest frame. Even output dimensions and at most 1920×1080 pixels. Requires the desktop and FFmpeg.'
+      : ['image-input', 'video-input', 'image-to-image', 'image-to-video', 'video-to-video'].includes(def.type)
       ? 'Media uses an AssetRef {id,path,type,sizeBytes}; use an existing project asset or connect a matching upstream media port. Non-empty connected text takes precedence over params.prompt. Image-to-video can consume a text-to-image result automatically in the same render; generation follows dependencies and does not pause for approval between nodes. Provider/model duration and size limits are not represented by this catalog.'
       : def.type === 'output' ? 'Connect an upstream image or video output. A renderable graph requires exactly one output node.'
       : 'Non-empty connected text takes precedence over params.prompt. Text input content uses params.text. Generation schemas describe parameter shapes, not provider/model capability limits; inspect the actual returned media.'
@@ -41,7 +47,7 @@ export function nodeTypeCatalog() {
 const port = objectSchema({ id: str, type: { enum: ['text', 'image', 'video'] } }, ['id', 'type']);
 const node = objectSchema({ id: idSchema, type: { enum: Object.keys(NODE_DEFINITIONS) }, params: { type: 'object', additionalProperties: true }, inputs: { type: 'array', items: port }, outputs: { type: 'array', items: port }, status: str, cachedResult: assetSchema }, ['id', 'type', 'params', 'inputs', 'outputs', 'status']);
 const edge = objectSchema({ id: idSchema, source: idSchema, sourcePort: str, target: idSchema, targetPort: str }, ['id', 'source', 'sourcePort', 'target', 'targetPort']);
-const graph = objectSchema({ schemaVersion: { const: 1 }, id: idSchema, version: integer, graphHash: str, nodes: { type: 'array', items: node }, edges: { type: 'array', items: edge } }, ['schemaVersion', 'id', 'version', 'graphHash', 'nodes', 'edges']);
+const graph = objectSchema({ schemaVersion: { const: 1 }, id: idSchema, name: canvasName, version: integer, graphHash: str, nodes: { type: 'array', items: node }, edges: { type: 'array', items: edge } }, ['schemaVersion', 'id', 'version', 'graphHash', 'nodes', 'edges']);
 const nodeResult = objectSchema({ nodeId: idSchema, version: integer, node }, ['nodeId', 'version', 'node']);
 const nullableNumber = { type: ['number', 'null'] };
 const nullableId = { anyOf: [idSchema, { type: 'null' }] };
@@ -52,10 +58,11 @@ const childJob = {
 export interface CanvasApiDefinition { name: string; method: string; description: string; inputSchema: Record<string, unknown>; outputSchema: Record<string, unknown>; }
 const spec = (name: string, method: string, description: string, properties: Record<string, unknown>, required: string[], outputSchema: Record<string, unknown>): CanvasApiDefinition => ({ name, method, description, inputSchema: objectSchema(properties, required), outputSchema });
 export const CANVAS_API: CanvasApiDefinition[] = [
-  spec('canvas_list', 'canvas.list', 'List canvases in the selected project, which defaults to MCP --project rather than the desktop current project. Returns structuredContent.canvases; use its length for the count.', {}, [], objectSchema({ canvases: { type: 'array', items: objectSchema({ id: idSchema, canvasId: idSchema, version: integer, graphHash: str, nodeCount: { type: 'integer' } }, ['id', 'canvasId', 'version', 'graphHash', 'nodeCount']) } }, ['canvases'])),
+  spec('canvas_list', 'canvas.list', 'List canvases in the selected project, which defaults to MCP --project rather than the desktop current project. Returns structuredContent.canvases, including optional saved names; use its length for the count.', {}, [], objectSchema({ canvases: { type: 'array', items: objectSchema({ id: idSchema, canvasId: idSchema, name: canvasName, version: integer, graphHash: str, nodeCount: { type: 'integer' } }, ['id', 'canvasId', 'version', 'graphHash', 'nodeCount']) } }, ['canvases'])),
   spec('canvas_get', 'canvas.get', 'Read the complete canvas graph, including node parameters, ports, cached results and version. Read back Unicode prompts before paid generation to detect client encoding loss. cachedResult contains an AssetRef, not image/video pixels; inspect its local file using host media tools. Partial generation results may be available in job_status.children before they are written to this graph.', { canvasId: idSchema }, ['canvasId'], graph),
   spec('canvas_node_types', 'canvas.node-types', 'Discover supported node types, exact port IDs/types, per-type paramsSchema, exampleParams and input requirements. Use before adding nodes or connecting ports. This is a structural catalog, not provider/model capability discovery; duration, resolution and supported parameter behavior depend on the configured provider.', {}, [], objectSchema({ types: { type: 'array', items: { type: 'object', properties: { type: str, label: str, inputs: { type: 'array', items: port }, outputs: { type: 'array', items: port }, requiredInputPorts: { type: 'array', items: str }, paramsSchema: { type: 'object' }, exampleParams: { type: 'object' }, notes: str, generationType: str } } } }, ['types'])),
-  spec('canvas_create', 'canvas.create', 'Create an empty canvas in an initialized project and return canvasId, version and canvas. Does not initialize a project or switch the desktop to the new canvas. Build nodes/edges and exactly one connected output before rendering.', {}, [], objectSchema({ canvasId: idSchema, version: integer, canvas: graph }, ['canvasId', 'version', 'canvas'])),
+  spec('canvas_create', 'canvas.create', 'Create an empty canvas with an optional display name in an initialized project and return canvasId, version and canvas. Does not initialize a project or switch the desktop to the new canvas. Build nodes/edges and exactly one connected output before rendering.', { name: canvasName }, [], objectSchema({ canvasId: idSchema, version: integer, canvas: graph }, ['canvasId', 'version', 'canvas'])),
+  spec('canvas_rename', 'canvas.rename', 'Rename a canvas display name without generating or invalidating its render cache and timeline references. Increments version only when the trimmed name changes; graphHash and node results are retained.', { canvasId: idSchema, name: canvasName }, ['canvasId', 'name'], objectSchema({ canvasId: idSchema, name: canvasName, version: integer }, ['canvasId', 'name', 'version'])),
   spec('canvas_node_add', 'canvas.node.add', 'Add a node. Discover node types/params with canvas_node_types. Incomplete graphs can be saved.', { canvasId: idSchema, type: { enum: Object.keys(NODE_DEFINITIONS) }, params: { type: 'object', additionalProperties: true } }, ['canvasId', 'type'], nodeResult),
   spec('canvas_node_set_params', 'canvas.node.set-param', 'Merge params into an existing node, retaining omitted fields. Use params.text for text-input; a non-empty connected text input takes precedence over a generation node params.prompt. Resets node/output cache and increments canvas version; does not generate. Read back edited prompts before rendering and use a new idempotencyKey for the new generation.', { canvasId: idSchema, nodeId: idSchema, params: { type: 'object', additionalProperties: true } }, ['canvasId', 'nodeId', 'params'], nodeResult),
   spec('canvas_node_remove', 'canvas.node.remove', 'Remove a node and its incident edges.', { canvasId: idSchema, nodeId: idSchema }, ['canvasId', 'nodeId'], objectSchema({ removed: idSchema, version: integer }, ['removed', 'version'])),

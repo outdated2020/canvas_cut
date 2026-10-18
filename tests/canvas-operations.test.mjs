@@ -56,10 +56,60 @@ test('tool metadata exposes valid JSON Schemas, node parameters, port requiremen
   const definition = core.CANVAS_API.find(api => api.name === 'canvas_node_types');
   assert.equal(ajv.compile(definition.outputSchema)(types), true);
   for (const api of core.CANVAS_API) { ajv.compile(api.inputSchema); ajv.compile(api.outputSchema); }
-  assert.equal(types.types.length, 10);
+  assert.equal(types.types.length, 11);
   const text = types.types.find(type => type.type === 'text-input');
   assert.equal(text.outputs[0].id, 'text'); assert.equal(text.paramsSchema.properties.text.type, 'string');
   const video = types.types.find(type => type.type === 'image-to-video');
   assert.deepEqual(video.requiredInputPorts, ['image', 'text']); assert.equal(video.exampleParams.durationMs, 5000);
   assert.equal(video.outputs[0].id, 'video');
+});
+
+test('canvas names persist across create, list and rename without invalidating render content', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'canvas-names-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const store = new core.ProjectStore(dir); await store.init('Names');
+  const changes = [], ops = new core.CanvasOperations(change => changes.push(change));
+  const call = (method, input = {}) => ops.call(method, dir, input);
+  const created = await call('canvas.create', { name: '  广州塔  ' });
+  assert.equal(created.canvas.name, '广州塔');
+  const graph = core.createCanvas('legacy');
+  assert.equal(graph.name, undefined);
+  const gen = core.addNode(graph, 'text-to-image', { prompt: 'test' }, 'gen');
+  const output = core.addNode(graph, 'output', {}, 'out');
+  const asset = { id: 'cached', path: 'cached.png', type: 'image', sizeBytes: 1 };
+  for (const node of [gen, output]) { node.cachedResult = asset; node.status = 'succeeded'; }
+  await store.writeCanvas(graph);
+  const timeline = await store.readTimeline();
+  core.addCanvasClip(core.addTrack(timeline, 'video', 'V1'), graph, 0, 5000, asset);
+  await store.writeTimeline(timeline);
+  const before = structuredClone(graph), key = core.nodeCacheKey(gen, {}, core.defaultProjectSettings());
+  const renamed = await call('canvas.rename', { canvasId: graph.id, name: '  悟空飞到鸟巢 🐒  ' });
+  const saved = await new core.ProjectStore(dir).readCanvas(graph.id);
+  assert.equal(renamed.name, '悟空飞到鸟巢 🐒');
+  assert.equal(saved.version, before.version + 1);
+  assert.equal(saved.graphHash, before.graphHash);
+  assert.equal(core.computeGraphHash(saved), before.graphHash);
+  assert.deepEqual(saved.nodes, before.nodes); assert.deepEqual(saved.edges, before.edges);
+  assert.equal(core.nodeCacheKey(saved.nodes[0], {}, core.defaultProjectSettings()), key);
+  assert.equal((await store.readTimeline()).tracks[0].clips[0].status, 'fresh');
+  assert.equal((await call('canvas.list')).canvases.find(c => c.id === graph.id).name, renamed.name);
+  assert.equal((await call('canvas.get', { canvasId: graph.id })).name, renamed.name);
+  assert.equal((await call('canvas.rename', { canvasId: graph.id, name: `  ${renamed.name} ` })).version, saved.version);
+  const notifications = changes.length;
+  for (const name of ['', '  ', '\ninvalid', 'x'.repeat(101), 42, null]) {
+    await assert.rejects(call('canvas.rename', { canvasId: graph.id, name }));
+  }
+  assert.deepEqual(await store.readCanvas(graph.id), saved);
+  assert.equal(changes.length, notifications);
+  await assert.rejects(call('canvas.rename', { canvasId: 'missing', name: 'valid' }), /not found/i);
+  await assert.rejects(call('canvas.create', { name: '   ' }));
+  await Promise.all([
+    call('canvas.rename', { canvasId: graph.id, name: '并发改名' }),
+    call('canvas.node.add', { canvasId: graph.id, type: 'text-input', params: { text: 'parallel' } })
+  ]);
+  const final = await store.readCanvas(graph.id);
+  assert.equal(final.name, '并发改名'); assert.equal(final.nodes.length, 3);
+  const ajv = new Ajv({ strict: false });
+  assert.equal(ajv.compile(core.CANVAS_API.find(api => api.method === 'canvas.get').outputSchema)(final), true);
+  assert.equal(ajv.compile(core.CANVAS_API.find(api => api.method === 'canvas.list').outputSchema)(await call('canvas.list')), true);
 });

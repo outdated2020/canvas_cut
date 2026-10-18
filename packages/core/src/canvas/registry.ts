@@ -71,6 +71,12 @@ export const NODE_DEFINITIONS: Record<NodeType, NodeDefinition> = {
     outputs: [port('video', 'video')],
     generationType: 'video-to-video'
   },
+  'white-model-video': {
+    type: 'white-model-video',
+    label: 'White Model Video',
+    inputs: [],
+    outputs: [port('video', 'video')]
+  },
   output: {
     type: 'output',
     label: 'Output',

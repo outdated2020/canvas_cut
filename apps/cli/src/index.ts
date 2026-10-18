@@ -14,6 +14,7 @@ import {
   canvasNodeRemove,
   canvasNodeSetParam,
   canvasRemove,
+  canvasRename,
   canvasRender,
   canvasStatus
 } from './commands/canvas';
@@ -71,6 +72,7 @@ const dispatch = new Map<string, Handler>([
   ['canvas create', canvasCreate],
   ['canvas get', canvasGet],
   ['canvas remove', canvasRemove],
+  ['canvas rename', canvasRename],
   ['canvas node add', canvasNodeAdd],
   ['canvas node remove', canvasNodeRemove],
   ['canvas node set-param', canvasNodeSetParam],
@@ -123,7 +125,7 @@ function printUsage(): void {
       '  project init|open|status',
       '  generate text-to-image|text-to-video|image-to-image|image-to-video|video-to-video',
       '  job status|wait|cancel|list',
-      '  canvas create|get|remove|node add|node remove|node set-param|edge connect|edge remove|render|status',
+      '  canvas create|get|rename|remove|node add|node remove|node set-param|edge connect|edge remove|render|status',
       '  timeline init|get|add-track|add-clip|add-subtitle|add-audio|split-clip|trim-clip|move-clip|set-transform|set-opacity|set-speed|set-volume|remove-clip|remove-track|add-transition|remove-transition|export',
       '  preset save|list|apply',
       '  manifest                     list commands and parameter schemas',

@@ -10,6 +10,7 @@ export type NodeType =
   | 'image-to-image'
   | 'image-to-video'
   | 'video-to-video'
+  | 'white-model-video'
   | 'output';
 
 export type NodeStatus =
@@ -56,6 +57,7 @@ export interface CanvasEdge {
 export interface CanvasGraph {
   schemaVersion: 1;
   id: string;
+  name?: string;
   version: number;
   graphHash: string;
   nodes: CanvasNode[];
@@ -104,6 +106,7 @@ export interface ProviderCapabilities {
 }
 
 export interface TextToImageRequest {
+  model?: string;
   prompt: string;
   negativePrompt?: string;
   width?: number;
@@ -114,6 +117,7 @@ export interface TextToImageRequest {
 }
 
 export interface TextToVideoRequest {
+  model?: string;
   prompt: string;
   negativePrompt?: string;
   durationMs?: number;
@@ -126,6 +130,7 @@ export interface TextToVideoRequest {
 }
 
 export interface ImageToImageRequest {
+  model?: string;
   image: AssetRef;
   prompt: string;
   negativePrompt?: string;
@@ -137,6 +142,7 @@ export interface ImageToImageRequest {
 }
 
 export interface ImageToVideoRequest {
+  model?: string;
   image: AssetRef;
   prompt: string;
   negativePrompt?: string;
@@ -150,6 +156,7 @@ export interface ImageToVideoRequest {
 }
 
 export interface VideoToVideoRequest {
+  model?: string;
   video: AssetRef;
   prompt: string;
   mode: 'edit' | 'extend';
@@ -347,6 +354,7 @@ export interface JobRecord {
 }
 
 export interface CanvasRenderPlan {
+  modelDefaults?: Pick<VolcengineConfig, 'imageModel' | 'videoModel'>;
   canvasId: string;
   graphHash: string;
   nodes: CanvasNode[];

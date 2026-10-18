@@ -10,8 +10,9 @@ export interface CliCommandManifest {
 }
 
 export const CLI_MANIFEST: CliCommandManifest[] = [
-  { command: 'manifest', description: 'Discover CLI commands; identifiers for canvas get/status/remove/render and job status/wait/cancel are positional arguments', parameters: [] },
+  { command: 'manifest', description: 'Discover CLI commands; identifiers for canvas get/rename/status/remove/render and job status/wait/cancel are positional arguments', parameters: [] },
   { command: 'canvas.list', description: 'List project canvases', parameters: [] },
+  { command: 'canvas.rename', description: 'Rename canvas by positional ID without invalidating render cache', parameters: [{ name: 'canvasId', type: 'string', required: true }, { name: 'name', type: 'string', required: true }] },
   { command: 'canvas.remove', description: 'Remove canvas by positional ID', parameters: [{ name: 'canvas', type: 'string', required: true }] },
   { command: 'asset.list', description: 'List local asset paths', parameters: [] },
   { command: 'asset.import', description: 'Import a file and return its AssetRef for image/video input nodes', parameters: [{ name: 'file', type: 'string', required: true }] },

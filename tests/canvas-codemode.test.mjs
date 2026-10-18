@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import Ajv from 'ajv';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import core from '../packages/core/dist/index.js';
@@ -48,7 +50,7 @@ test('real MCP code discovers and builds a canvas, edits it, generates through I
   assert.ok(catalog.types.find(type => type.type === 'text-to-image').inputs.some(port => port.id === 'text'));
   const flow = await run(`
     const data = r => r.structuredContent;
-    const canvas = data(await tools.canvas_create({}));
+    const canvas = data(await tools.canvas_create({name:'初始画布'}));
     const input = data(await tools.canvas_node_add({canvasId: canvas.canvasId, type: 'text-input', params: {text:'initial'}}));
     const gen = data(await tools.canvas_node_add({canvasId: canvas.canvasId, type: 'text-to-image'}));
     const output = data(await tools.canvas_node_add({canvasId: canvas.canvasId, type: 'output'}));
@@ -73,6 +75,19 @@ test('real MCP code discovers and builds a canvas, edits it, generates through I
   assert.equal(graph.nodes.find(node => node.type === 'output').cachedResult.id, asset.id);
   const ajv = new Ajv({ strict: false });
   assert.equal(ajv.compile(core.CANVAS_API.find(api => api.name === 'canvas_get').outputSchema)(graph), true);
+  assert.equal(graph.name, '初始画布');
+  const renameFound = JSON.parse((await call('search_tools', { query: 'canvas_rename' })).content[0].text).tools[0];
+  assert.equal(renameFound.name, 'canvas_rename');
+  const renamed = (await run(`return (await tools.canvas_rename({canvasId:${JSON.stringify(canvasId)},name:'  悟空的旅程  '})).structuredContent;`)).result;
+  assert.equal(renamed.name, '悟空的旅程');
+  const named = await store.readCanvas(canvasId);
+  assert.equal(named.name, renamed.name); assert.equal(named.graphHash, graph.graphHash);
+  assert.deepEqual(named.nodes, graph.nodes);
+  const namedList = (await run('return (await tools.canvas_list({})).structuredContent.canvases;')).result;
+  assert.equal(namedList.find(canvas => canvas.id === canvasId).name, renamed.name);
+  const cliRename = await promisify(execFile)(process.execPath, [resolve('apps/cli/dist/index.js'), 'canvas', 'rename', canvasId, '--name', 'CLI 在线改名', '--project', dir, '--json'], { env: { ...process.env, APPDATA: dir } });
+  assert.equal(JSON.parse(cliRename.stdout).data.name, 'CLI 在线改名');
+  assert.equal((await store.readCanvas(canvasId)).name, 'CLI 在线改名');
   assert.equal(ajv.compile(core.CANVAS_API.find(api => api.name === 'job_status').outputSchema)(status), true);
   assert.ok(changes.filter(change => change.canvasId === canvasId).length >= 9);
   const cancellation = (await run(`

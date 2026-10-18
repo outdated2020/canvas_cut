@@ -6,3 +6,5 @@ out/
 .DS_Store
 *.tmp-*
 .lock
+/.workbuddy/
+/demo-project/

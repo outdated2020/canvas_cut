@@ -30,10 +30,11 @@ test('refresh results cannot overwrite a switched project/canvas, even when swit
 });
 
 test('canvas refresh keeps positions and selection for surviving nodes and drops removed selections', () => {
-  const previous = [{ id: 'keep', position: { x: 50, y: 70 }, selected: true, data: { text: 'old' } }, { id: 'removed', selected: true }];
+  const previous = [{ id: 'keep', position: { x: 50, y: 70 }, selected: true, width: 260, height: 420, data: { text: 'old' } }, { id: 'removed', selected: true }];
   const next = [{ id: 'keep', position: { x: 0, y: 0 }, data: { text: 'new' } }, { id: 'added', position: { x: 10, y: 10 } }];
   const merged = reconcileCanvasNodes(previous, next);
   assert.deepEqual(merged[0].position, { x: 50, y: 70 }); assert.equal(merged[0].selected, true);
+  assert.equal(merged[0].width, 260); assert.equal(merged[0].height, 420);
   assert.equal(merged[0].data.text, 'new'); assert.equal(merged.some(node => node.id === 'removed'), false);
   assert.deepEqual(merged[1], next[1]);
 });

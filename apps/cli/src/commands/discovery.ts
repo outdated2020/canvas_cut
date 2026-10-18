@@ -6,13 +6,13 @@ import { CliOptions, stringFlag } from '../args';
 
 export function manifest() {
   return { commands: CLI_MANIFEST, globalOptions: ['--project <path>', '--json', '--dry-run', '--help', '--params-file <path>', '--idempotency-key <key>'],
-    positionalIds: ['canvas.get', 'canvas.status', 'canvas.remove', 'canvas.render', 'job.status', 'job.wait', 'job.cancel'],
+    positionalIds: ['canvas.get', 'canvas.status', 'canvas.rename', 'canvas.remove', 'canvas.render', 'job.status', 'job.wait', 'job.cancel'],
     examples: ['canvas-cut canvas get <canvasId> --json', 'canvas-cut canvas node add --canvas <canvasId> --type text-input --params-file params.json --json', 'canvas-cut job wait <jobId> --timeout-ms 1800000 --json'] };
 }
 export async function canvasList(options: CliOptions) {
   const store = createStore(options); await store.requireOpen();
   const graphs = await Promise.all((await store.listCanvasFiles()).map((file) => store.readCanvas(file.replace(/\.json$/, ''))));
-  return graphs.map((graph) => ({ canvasId: graph.id, graphHash: graph.graphHash, version: graph.version }));
+  return graphs.map((graph) => ({ canvasId: graph.id, name: graph.name, graphHash: graph.graphHash, version: graph.version }));
 }
 export async function assetList(options: CliOptions) {
   const store = createStore(options); await store.requireOpen();

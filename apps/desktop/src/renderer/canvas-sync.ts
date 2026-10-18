@@ -45,10 +45,11 @@ export function createCanvasRefreshCoordinator<Sidebar, Canvas>(options: {
   };
 }
 
-export function reconcileCanvasNodes<T extends { id: string; position?: unknown; selected?: boolean }>(previous: T[], next: T[]): T[] {
+export function reconcileCanvasNodes<T extends { id: string; position?: unknown; selected?: boolean; width?: number | null; height?: number | null }>(previous: T[], next: T[]): T[] {
   const existing = new Map(previous.map(node => [node.id, node]));
   return next.map(node => {
     const old = existing.get(node.id);
-    return old ? { ...node, position: old.position, selected: old.selected } : node;
+    return old ? { ...node, position: old.position, selected: old.selected,
+      ...(old.width == null ? {} : { width: old.width }), ...(old.height == null ? {} : { height: old.height }) } : node;
   });
 }

@@ -6,6 +6,7 @@ Canvas Cut 是一个基于 Electron 的本地视频创作项目，使用节点�
 
 ## 目录
 
+- [示例](#示例)
 - [快速启动](#快速启动)
 - [代码架构](#代码架构)
 - [项目数据与配置](#项目数据与配置)
@@ -15,6 +16,16 @@ Canvas Cut 是一个基于 Electron 的本地视频创作项目，使用节点�
 - [内置 Agent 与 CLI](#内置-agent-与-cli)
 - [验证与扩展](#验证与扩展)
 - [常见问题](#常见问题)
+
+## 示例
+
+### 使用 Code Mode 搭建生成画布
+
+以一二布布和孙悟空的过山车场景为例，展示通过 MCP Code Mode 搭建角色参考图、白模场景和视频生成画布的过程。
+
+[![Code Mode 操作录屏：角色参考图、过山车白模与视频生成画布](docs/examples/canvas-cut-demo-20261018.jpg)](docs/examples/canvas-cut-demo-20261018.mp4)
+
+[观看或下载示例视频](docs/examples/canvas-cut-demo-20261018.mp4) · 约 2 分 38 秒 · 1728 × 1080 · 4 倍速录屏
 
 ## 快速启动
 
@@ -45,66 +56,29 @@ node apps/cli/dist/index.js project status --project "C:/Projects/my-video" --js
 
 画布生成需要桌面主进程运行。直接使用 Code Mode 画布工具无需配置内置 Agent 的聊天模型；调用 `agent_send_prompt` 开始模型对话时，需另配 Agent 地址、模型和密钥。
 
+每个云端生成节点可单独设置模型：展开节点，在「生成模型」下拉框选择型号，或选择「自定义模型 ID / 接入点 ID」后输入并保存。选择「使用项目默认」或留空会沿用 Settings 中的图像/视频模型；不同节点可以混用，节点底部显示实际选择。下拉列表按节点生成方式筛选，使用官方目录快照，账号是否已开通未自动查询；目录范围与维护入口见[Provider](Reference/modules/core-provider.md)。CLI/MCP 对应参数仍为 `params.model`，清空用 `""` 或 `null`；更换实际模型后缓存会区分，详见[画布模型与缓存](Reference/modules/core-canvas.md)。模型仍需支持该节点的生成方式。
+
+画布支持重命名：在列表卡片或画布顶部双击名称，或点击旁边的铅笔；Enter/勾选保存，Esc/取消放弃。名称保存在项目中，旧画布仍可显示 Canvas 序号；改名不会使生成缓存或时间线素材过期。CLI 使用 `canvas-cut canvas rename <canvasId> --name "广州塔" --json`；MCP 在 execute 内调用 `await tools.canvas_rename({canvasId, name: "广州塔"})`，可在创建画布时传入 name。规则与接口见[画布](Reference/modules/core-canvas.md)。
+
 ## 代码架构
 
-项目使用 TypeScript 和 npm workspaces。桌面负责界面、系统资源和长任务，core 提供业务逻辑，CLI 提供命令与 stdio MCP，Code Mode 提供受限 JavaScript 编排，Agent Runtime 提供独立的模型与工具循环。
+技术栈、包依赖与主要调用链见 [AGENTS.md](AGENTS.md)；完整模块职责、接口与边界见 [Reference](Reference/README.md)。当前是 Electron/React 桌面应用，CLI、内置 Agent 和 MCP 共享业务能力；长任务需要桌面主进程运行。实际职责重叠和未实现设计已记录在 [架构问题](Reference/issues.md)，不改变现有运行行为。
 
-### 模块分工
+### 白模视频使用
 
-| 目录 | 职责 | 主要入口 |
-| --- | --- | --- |
-| `apps/desktop/src/renderer` | React 界面、React Flow 画布、时间线、对话和设置；接收项目刷新通知 | `App.tsx`、`CanvasGraphView.tsx`、`TimelineView.tsx` |
-| `apps/desktop/src/preload` | 向 renderer 暴露受控的 Electron IPC 接口 | `preload.ts` |
-| `apps/desktop/src/main` | 窗口、设置与凭证、本地 IPC 服务、任务调度、素材上传、Agent 宿主 | `main.ts`、`ipc-server.ts`、`daemon.ts`、`job-worker.ts` |
-| `apps/cli/src` | CLI 参数解析、项目/画布/时间线命令、MCP 服务和 IPC 客户端 | `index.ts`、`mcp/server.ts`、`mcp/canvas-tools.ts`、`ipc/client.ts` |
-| `packages/core/src` | 项目持久化、画布图操作与执行计划、节点缓存、Provider 适配、时间线与 FFmpeg | `project/project-store.ts`、`canvas/*`、`provider/*`、`timeline/*` |
-| `packages/codemode/src` | 工具目录、Schema 校验、发现提示、QuickJS/WASM Worker 和资源限制 | `index.ts`、`catalog.ts`、`executor.ts`、`worker.ts` |
-| `packages/agent/src` | 通用 Agent Runtime；模型流式调用、文件/补丁、Shell/PTY、Skills、外部 MCP、会话恢复 | `runtime.ts`、`tools.ts`、`host.ts`、`mcp.ts`、`sessions.ts` |
-| `skills` | 桌面 Agent 使用的画布、图生视频、分镜等工作流说明 | 各目录的 `SKILL.md` |
-| `tests` | IPC、CLI、画布、任务、时间线、Agent 和 Code Mode 回归 | `canvas-codemode.test.mjs`、`mcp.test.mjs` 等 |
+打开画布后，在空白处右键选择要添加的节点，新节点落在点击的位置；工具栏的节点下拉框也保留。菜单交互和验证说明见 [桌面 UI](Reference/modules/desktop-ui.md)。
 
-### 主要调用关系
+拖近同类型节点，出现高亮、虚线对齐引导线和落点轮廓后松开即可吸附对齐；画布右上角可关闭吸附。Shift/Ctrl 多选或拖动框选后，点击「打组」或按 Ctrl+G，拖动组标题即可整体移动，名称可直接编辑；解组使用按钮或 Ctrl+Shift+G。左键空白处框选，中键或按住空格拖动画布。位置和分组保存在本设备的应用存储中，重新打开同一项目和画布会恢复；存储边界见 [桌面 UI](Reference/modules/desktop-ui.md)。
 
-```mermaid
-flowchart LR
-  External[外部 MCP Client / Agent] --> MCP[CLI stdio MCP]
-  MCP --> Mode[Code Mode / QuickJS]
-  Mode --> Bridge[tools.* / LocalIpcClient]
-  Bridge --> Main[桌面主进程 / LocalIpcServer]
-  UI[React 界面] --> Preload[Electron preload IPC]
-  Preload --> Main
-  Main --> Canvas[core / CanvasOperations]
-  Canvas --> Store[ProjectStore / 项目文件]
-  Main --> Daemon[DaemonService / JobStore]
-  Daemon --> Worker[JobWorker]
-  Worker --> Engine[core / 画布与时间线执行]
-  Engine --> Provider[生成 Provider / 素材下载]
-  Worker --> FFmpeg[FFmpeg / 成片导出]
-  Main --> Agent[通用 Agent Runtime]
-  Agent --> CLI[CLI / Skills / 外部工具]
-```
+在节点菜单添加 white-model-video，展开参数面板后添加方块、球体或圆柱，调整物体与相机的起止参数，预览并保存。把 video 输出连接到 output，点击生成得到本地 MP4，也可接入 video-to-video 或加入时间线。
 
-外部 MCP 使用 stdio；CLI 与桌面之间使用带 token 的本地 IPC：Windows 为 named pipe，其他平台为 Unix socket。IPC 连接信息保存在桌面 userData 的 `ipc/instance.json`，客户端检查实例进程并连接对应 endpoint；该服务不新增网络监听端口。
+该节点不需要 ARK/TOS 密钥，连接下游 AI 节点仍需对应配置。Settings 中应选择支持 image2、PNG 解码和 libx264 的完整 FFmpeg。默认场景和限制见 [画布参数契约](Reference/modules/core-canvas.md)，输出/进度/取消见 [任务说明](Reference/modules/desktop-jobs.md)，真实 Electron 验收脚本见 [工程说明](Reference/modules/engineering.md)。
 
-内置 Agent 的 `packages/agent/src/mcp.ts` 是向外连接其他 MCP 服务的客户端，`apps/cli/src/mcp/server.ts` 则是供外部 Agent 访问 Canvas Cut 的服务端，两者方向不同。
+### 开发文档
 
-### 画布编辑与生成
-
-画布编辑链路为 `execute → tools.canvas_* → Local IPC → CanvasOperations → ProjectStore`。桌面编辑和外部 IPC 复用 `CanvasOperations`；传统 CLI 编辑命令调用同一组 core 图操作与持久化函数。
-
-`canvas/api.ts` 定义工具的输入/输出 Schema 和节点参数说明，`canvas/registry.ts` 定义节点类型与端口，`canvas/graph.ts` 处理节点、连线、版本和图校验。编辑通过项目锁和原子 JSON 写入保存；构建中的不完整图允许保存，生成时再验证整图。
-
-`canvas/engine.ts` 根据整张图建立拓扑执行计划，解析上游文本和素材，并生成 Provider 请求。节点缓存键包含节点类型、参数、输入文本/素材 ID 和项目分辨率设置；缓存文件存在时可以复用结果。`graphHash` 用于描述图结构和参数，不包含执行状态及缓存结果。
-
-生成链路为 `canvas_render → DaemonService → JobStore → JobWorker → 画布引擎 → Provider`。提交立即返回 `jobId`，Worker 在后台执行。默认使用项目 SQLite 保存任务，SQLite 不可用时回退到 `cache/jobs.json`。父任务表示整图生成，子任务表示各个生成节点。
-
-Worker 将结果写入 assets 和缓存，并在图未发生变化时写回节点与 output。编辑和生成结果写回后，主进程发送 `canvas-cut:canvas-changed`；renderer 按项目过滤、合并短时间通知，并通过视图标识和请求版本防止切换画布后的旧响应覆盖新页面。刷新保留存续节点的位置与选择，不自动打开新建画布。
-
-### Code Mode 执行器
-
-`Catalog` 根据注册目录返回工具描述、输入/输出 JSON Schema 和 TypeScript 调用提示，并用 Ajv 校验实际参数。每次 `execute` 创建独立 Worker，Worker 内使用 QuickJS/WASM 执行普通 JavaScript 异步函数体。
-
-脚本通过冻结的 `tools` 对象调用注册方法。异步调用经 Worker 消息桥接到宿主，由宿主执行工具并返回 MCP 包装结果。脚本不能直接访问 Node.js、环境变量、文件系统或网络；已注册工具仍会产生它们对应的真实业务副作用。
+- [画布编辑与执行](Reference/modules/core-canvas.md)、[时间线与计划](Reference/modules/core-timeline.md)
+- [桌面桥接](Reference/modules/desktop-bridge.md)、[CLI](Reference/modules/cli.md)、[对外 MCP](Reference/modules/cli-mcp.md)
+- [Agent Runtime](Reference/modules/agent-runtime.md)、[宿主](Reference/modules/desktop-agent-host.md)、[Code Mode](Reference/modules/codemode.md)
 
 ## 项目数据与配置
 
@@ -417,6 +391,8 @@ JavaScript 不提供 process、require、fetch、文件系统、模块导入或�
 
 桌面 Agent 使用 AI SDK 进行单步流式模型调用，注册文件、补丁、Shell/PTY、Skills 和外部 MCP 工具；由桌面宿主提供模型配置、项目 cwd、应用说明和 canvas-cut CLI launcher。每个会话只允许一个活动运行，会话消息、工具记录和游标保存在 userData 的 `agent/sessions`，重启后保留历史并标记中断运行。
 
+DeepSeek 官方端点或名称含 DeepSeek 前缀的模型会自动使用对应 Chat 适配器，保留 `reasoning_content` 并在工具后续请求和重开会话后回传，避免思考模式报缺少字段。自定义代理继续使用配置的地址和密钥；识别范围、旧会话缺失内容的限制及验证方式见[Agent Runtime](Reference/modules/agent-runtime.md)。
+
 Skills 的覆盖优先级为项目 > 用户 > 内置：项目 `<project>/skills`，用户 `~/.canvas-cut/skills`，内置仓库 `skills`。运行时按需发现和加载说明。当前为本地可信执行模式，项目 cwd 不是文件系统沙箱。
 
 停止 Agent 会停止该 run 的模型调用及所属本地进程，不自动取消已提交的生成任务。外部 Agent 也可以直接使用 Code Mode，无需经过内置 Agent 的模型循环。
@@ -433,38 +409,16 @@ CLI 的项目/画布文件操作可直接使用 core，生成、任务查询和�
 
 ## 验证与扩展
 
-常用开发命令：
+构建、开发启动、按模块选择测试及白模实机脚本见 [工程说明](Reference/modules/engineering.md)。npm run dev:desktop:app 启动完整开发桌面，默认自动选择端口；可传 -SkipBuild 或 -Port。构建不生成安装包，mock 模型/Provider 回归不等于真实创作质量验收。
 
-```powershell
-npm run typecheck
-npm run build:cli
-npm run build:desktop
-npm test
-npm run test:codemode
-npm run dev:desktop:app
-```
+新增能力先在 [Reference 索引](Reference/README.md)确定唯一模块归属，同步所属模块的接口、边界与验证入口。新增画布节点/工具维护 core registry/api/engine，再由对应桌面服务和 MCP 桥消费；新增 Provider 实现 GenerationProvider 并接入 factory，具体约束见对应模块。
 
-`npm test` 编译测试模块并运行 mock 模型/Provider、真实本地 stdio/IPC 和行为回归，不调用付费生成服务。`build:desktop` 验证 TypeScript 与 renderer 生产构建，不生成可分发安装包。真实验收还需覆盖 Provider、上传、媒体质量、时间线、字幕、音轨、取消和 FFmpeg 导出。
+- [产品范围与创作验收](Reference/product.md)
+- [问题记录](Reference/issues.md)与[必要历史决策](Reference/decisions.md)
+- [旧文档迁移对照](Reference/migration.md)
+- [当前计划与历史验证](PLAN.md)
 
-新增画布/任务 Code Mode 工具时，在 `packages/core/src/canvas/api.ts` 定义业务接口、描述及输入/输出 Schema，在对应 core/桌面服务实现业务，再由 `apps/cli/src/mcp/canvas-tools.ts` 注册桥接。确保返回 structuredContent 和 JSON text，并在修改成功后发送项目刷新通知。
-
-新增节点时，需要同步更新 registry、参数 Schema、图校验、执行请求与 Provider 支持；新增 Provider 时实现 GenerationProvider 并接入 factory。维护工具说明时应同时核对 `CODEMODE_INSTRUCTIONS`、`CODEMODE_TOOLS` 和本 README，避免声明未实现的能力。
-
-相关设计与接口文档：
-
-| 文档 | 内容 |
-| --- | --- |
-| [AGENT_RUNTIME.md](AGENT_RUNTIME.md) | Agent 工具参数、配置、会话与恢复机制 |
-| [AGENT_ORCHESTRATION_DESIGN.md](AGENT_ORCHESTRATION_DESIGN.md) | Agent、Skills、CLI 宿主关系 |
-| [CORE_ENGINE_DESIGN.md](CORE_ENGINE_DESIGN.md) | 核心图执行与缓存设计 |
-| [CANVAS_PROTOCOL.md](CANVAS_PROTOCOL.md) | 画布数据协议 |
-| [LOCAL_IPC_PROTOCOL.md](LOCAL_IPC_PROTOCOL.md) | 本地 IPC 协议 |
-| [PROJECT_STATE_PROTOCOL.md](PROJECT_STATE_PROTOCOL.md) | 项目数据结构 |
-| [PROVIDER_ADAPTER_DESIGN.md](PROVIDER_ADAPTER_DESIGN.md) | Provider 适配设计 |
-| [TIMELINE_RENDER_DESIGN.md](TIMELINE_RENDER_DESIGN.md) | 时间线与导出设计 |
-| [PLAN.md](PLAN.md) | 当前进展与待办 |
-
-历史设计文档可能包含计划能力；当前可调用工具及其 Schema 以运行服务的发现结果为准。
+本次文档治理没有重新运行业务测试或调用真实生成服务。当前可调用工具及 Schema 以运行服务的发现结果为准。
 
 ## 常见问题
 

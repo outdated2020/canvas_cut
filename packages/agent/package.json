@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@ai-sdk/deepseek": "^3.0.67",
     "@ai-sdk/openai": "^4.0.43",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/picomatch": "^4.0.3",

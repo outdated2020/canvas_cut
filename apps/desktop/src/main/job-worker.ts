@@ -29,16 +29,19 @@ import {
   resolveCanvasClipsInTimeline,
   JobRecord
 } from '@canvas-cut/core';
+import type { WhiteModelRequest } from '@canvas-cut/core';
+import type { WhiteModelRenderer } from './white-model-renderer';
 import { notifyCanvasChanged, type CanvasChanged } from '@canvas-cut/core';
 import type { JobStore } from './job-store';
 import { logger } from '@canvas-cut/core';
 import { TosUploader } from './uploader';
 
-interface WorkerOptions {
+export interface WorkerOptions {
   onCanvasChanged?: CanvasChanged;
   pollIntervalMs?: number;
   ffmpegPath?: string;
   maxConcurrency?: number;
+  renderWhiteModel?: WhiteModelRenderer;
 }
 
 export class JobWorker {
@@ -288,14 +291,17 @@ export class JobWorker {
     if (visited.size > 2) throw new CanvasCutError(ERROR_CODES.EDGE_INVALID, 'Canvas nesting is limited to two levels');
     const graph = await this.store.readCanvas(canvasId);
     const project = await this.store.readProject();
+    const config = await this.store.readConfig();
     const cache = new FileNodeCacheStore(this.store.paths.cacheDir);
     const plan = await buildCanvasRenderPlan(
       graph,
       project.settings,
-      { force: options?.force, nodeId: options?.nodeId },
+      { force: options?.force, nodeId: options?.nodeId,
+        modelDefaults: { imageModel: config.provider.volcengine.imageModel, videoModel: config.provider.volcengine.videoModel } },
       cache
     );
-    const provider = await this.createProvider();
+    let providerPromise: Promise<GenerationProvider> | undefined;
+    const getProvider = () => providerPromise ??= this.createProvider();
 
     const execution = await executeCanvasPlan(
       plan,
@@ -315,6 +321,22 @@ export class JobWorker {
           const child = parentJobId ? this.jobStore.list({ parentId: parentJobId }).find((item) => item.node_id === node.id) : undefined;
           if (child) this.jobStore.update(child.id, { status: 'running', updated_at: Date.now() });
           const type = node.type;
+          if (type === 'white-model-video') {
+            if (!this.options.renderWhiteModel) throw new CanvasCutError(ERROR_CODES.RENDER_FAILED, 'White model rendering requires the desktop renderer');
+            return this.options.renderWhiteModel(request as WhiteModelRequest, {
+              assetsDir: this.store.paths.assetsDir, cacheDir: this.store.paths.cacheDir,
+              ffmpegPath: this.options.ffmpegPath,
+              signal: parentJobId ? this.controllers.get(parentJobId)?.signal : undefined,
+              onProgress: progress => {
+                if (!parentJobId || this.jobStore.get(parentJobId)?.status === 'cancelled') return;
+                if (child) this.jobStore.update(child.id, { progress, updated_at: Date.now() });
+                const children = this.jobStore.list({ parentId: parentJobId, limit: 10_000 });
+                const total = children.reduce((sum, item) => sum + (item.status === 'succeeded' ? 100 : item.progress ?? 0), 0);
+                this.jobStore.update(parentJobId, { progress: children.length ? total / children.length : progress, updated_at: Date.now() });
+              }
+            });
+          }
+          const provider = await getProvider();
           switch (type) {
             case 'text-to-image':
               return (await provider.textToImage(request as TextToImageRequest)).result as AssetRef;

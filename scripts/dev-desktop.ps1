@@ -1,5 +1,7 @@
 ﻿param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [ValidateRange(0, 65535)]
+    [int]$Port = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,15 +38,27 @@ if (-not (Test-Path -LiteralPath $viteJs)) {
 }
 
 $nodeExe = (Get-Command node).Source
-$viteOutLog = Join-Path $env:TEMP "canvas-cut-vite-out.log"
-$viteErrLog = Join-Path $env:TEMP "canvas-cut-vite-err.log"
+$launchId = [Guid]::NewGuid().ToString("N")
+$viteOutLog = Join-Path $env:TEMP "canvas-cut-vite-$launchId-out.log"
+$viteErrLog = Join-Path $env:TEMP "canvas-cut-vite-$launchId-err.log"
+
+# Let Windows choose an available port outside its reserved ranges.
+# Vite 6 treats --port 0 as its default, so resolve the port before launching it.
+if ($Port -eq 0) {
+    $portProbe = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    try {
+        $portProbe.Start()
+        $Port = ([System.Net.IPEndPoint]$portProbe.LocalEndpoint).Port
+    } finally { $portProbe.Stop() }
+}
+$devServerUrl = "http://127.0.0.1:$Port"
 
 Set-Location $desktopDir
 
 # 启动 vite dev server（隐藏窗口，输出重定向到日志文件）
 $viteProcess = Start-Process `
     -FilePath $nodeExe `
-    -ArgumentList "`"$viteJs`"", "--host", "127.0.0.1", "--port", "5173", "--strictPort" `
+    -ArgumentList "`"$viteJs`"", "--host", "127.0.0.1", "--port", "$Port", "--strictPort" `
     -WorkingDirectory $desktopDir `
     -WindowStyle Hidden `
     -RedirectStandardOutput $viteOutLog `
@@ -58,19 +72,35 @@ try {
         $viteProcess.Refresh()
         if ($viteProcess.HasExited) {
             Get-Content -LiteralPath $viteErrLog -ErrorAction SilentlyContinue | Write-Host
-            throw "Vite failed to start. Port 5173 may already be in use; close the existing dev server and retry."
+            throw "Vite failed to start on $devServerUrl. See $viteErrLog. For EACCES or EADDRINUSE, retry without -Port to choose a new available port."
         }
         try {
-            $response = Invoke-WebRequest -Uri "http://127.0.0.1:5173/@vite/client" -UseBasicParsing -TimeoutSec 1
-            if ($response.StatusCode -eq 200) { $ready = $true; break }
+            # An existing server can answer HTTP before this Vite process fails to bind.
+            # Only probe once this launch has announced its own listening URL.
+            $viteOutput = Get-Content -LiteralPath $viteOutLog -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+            # Vite adds ANSI formatting around the port when the parent terminal forces color.
+            $plainViteOutput = [regex]::Replace([string]$viteOutput, '\x1B\[[0-?]*[ -/]*[@-~]', '')
+            if ($plainViteOutput -notmatch [regex]::Escape("$devServerUrl/")) {
+                Start-Sleep -Milliseconds 500
+                continue
+            }
+            $request = [System.Net.HttpWebRequest]::Create("$devServerUrl/@vite/client")
+            $request.Proxy = $null
+            $request.Timeout = 1000
+            $response = $request.GetResponse()
+            try {
+                if ([int]$response.StatusCode -eq 200) { $ready = $true }
+            } finally { $response.Close() }
+            if ($ready) { break }
         } catch { }
         Start-Sleep -Milliseconds 500
     }
     if (-not $ready) { throw "Vite did not become ready. See $viteErrLog" }
     Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
-    $env:VITE_DEV_SERVER_URL = "http://127.0.0.1:5173"
+    $env:VITE_DEV_SERVER_URL = $devServerUrl
     Write-Host "Starting Canvas Cut desktop in development mode..."
+    Write-Host "Vite URL: $devServerUrl"
     Write-Host "Vite logs: $viteOutLog"
     Write-Host "(Close the app window to return to the shell)"
 

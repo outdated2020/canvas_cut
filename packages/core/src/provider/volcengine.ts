@@ -165,7 +165,7 @@ export class VolcengineProvider implements GenerationProvider {
     const layerDecomposition = req.extra?.layerDecomposition as boolean | undefined;
 
     const body: Record<string, unknown> = {
-      model: this.config.imageModel,
+      model: req.model?.trim() || this.config.imageModel,
       prompt: req.prompt,
       size: mapImageSize(req.width, req.height, sizeMode),
       output_format: background === 'transparent' ? 'png' : 'png',
@@ -216,7 +216,7 @@ export class VolcengineProvider implements GenerationProvider {
   async textToVideo(req: TextToVideoRequest): Promise<GenerationJob> {
     const content: unknown[] = [{ type: 'text', text: req.prompt }];
     const body = this.videoBody(req.prompt, content, req.width, req.height, req.durationMs, {
-      generateAudio: Boolean(req.extra?.generateAudio)
+      generateAudio: Boolean(req.extra?.generateAudio), model: req.model
     });
     const task = await this.fetchJson<ArkTaskResponse>('/contents/generations/tasks', {
       method: 'POST',
@@ -234,7 +234,7 @@ export class VolcengineProvider implements GenerationProvider {
     const layerDecomposition = req.extra?.layerDecomposition as boolean | undefined;
 
     const body: Record<string, unknown> = {
-      model: this.config.imageModel,
+      model: req.model?.trim() || this.config.imageModel,
       prompt: req.prompt,
       image: [imageUrl],
       size: mapImageSize(req.width, req.height, sizeMode),
@@ -289,7 +289,7 @@ export class VolcengineProvider implements GenerationProvider {
       { type: 'image_url', image_url: { url: imageUrl }, role: 'reference_image' }
     ];
     const body = this.videoBody(req.prompt, content, req.width, req.height, req.durationMs, {
-      generateAudio: Boolean(req.extra?.generateAudio)
+      generateAudio: Boolean(req.extra?.generateAudio), model: req.model
     });
     const task = await this.fetchJson<ArkTaskResponse>('/contents/generations/tasks', {
       method: 'POST',
@@ -306,7 +306,7 @@ export class VolcengineProvider implements GenerationProvider {
     ];
     const body = this.videoBody(req.prompt, content, req.width, req.height, req.durationMs, {
       generateAudio: Boolean(req.extra?.generateAudio),
-      omniReferenceTaskType: req.mode
+      omniReferenceTaskType: req.mode, model: req.model
     });
     const task = await this.fetchJson<ArkTaskResponse>('/contents/generations/tasks', {
       method: 'POST',
@@ -358,12 +358,12 @@ export class VolcengineProvider implements GenerationProvider {
     width: number | undefined,
     height: number | undefined,
     durationMs: number | undefined,
-    options: { generateAudio: boolean; omniReferenceTaskType?: 'edit' | 'extend' }
+    options: { generateAudio: boolean; omniReferenceTaskType?: 'edit' | 'extend'; model?: string }
   ): Record<string, unknown> {
     const w = width ?? 1920;
     const h = height ?? 1080;
     const body: Record<string, unknown> = {
-      model: this.config.videoModel,
+      model: options.model?.trim() || this.config.videoModel,
       content,
       generate_audio: options.generateAudio,
       ratio: options.omniReferenceTaskType ? 'adaptive' : mapRatio(w, h),

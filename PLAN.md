@@ -1,8 +1,9 @@
 # Canvas Cut 执行计划
 
-> 更新日期：2026-09-06
-> 当前状态：原型骨架及基础交互已实现；本轮已修复一批预览、导出、任务与 Agent 闭环问题。Phase 0 尚未完成真实端到端验收。
+> 更新日期：2026-10-11（文档治理；历史验证日期保留）
+> 当前状态：原型骨架及基础交互已实现；通用 Agent Runtime、MCP 客户端、Shell/PTY、多会话 UI 和分层 System Prompt 已接入。Phase 0 尚未完成真实端到端验收。
 > 进度口径：代码实现、自动化测试通过、真实服务联调、产品验收分别记录，不能互相替代。
+> 当前 Runtime 状态以第 11、12 节及 [Agent Runtime](Reference/modules/agent-runtime.md) 为准；带日期的实施记录保留当时状态。
 
 ## 1. 目标与下一个里程碑
 
@@ -14,21 +15,7 @@
 
 ## 2. 仓库结构与实际架构
 
-| 目录 | 职责 |
-| --- | --- |
-| apps/desktop/src/main | Electron 主进程、IPC、Daemon、Job Worker、SQLite、TOS、运行时设置 |
-| apps/desktop/src/preload | 渲染进程可调用命令白名单 |
-| apps/desktop/src/renderer | React UI、节点画布、时间线、素材预览、多轨基础预览 |
-| apps/cli | 命令行、到主进程的 IPC 客户端、MCP stdio 服务 |
-| packages/core | 类型、项目存储、画布图与执行、缓存、Provider、时间线、FFmpeg |
-| packages/agent | AI SDK 通用工具循环、LocalAgentHost、Skill 注册、会话持久化 |
-| skills | image-to-video、storyboard-to-video 流程文档 |
-| tests | core、CLI、Agent、任务与预览/导出回归测试 |
-| scripts | 启动、联调及历史修补脚本 |
-
-实际调用链：UI → Electron IPC → 主进程；CLI 的生成/渲染任务 → 本地 IPC → 主进程；CLI 部分编辑命令直接调用 core；Agent → 基础工具 → Shell → canvas-cut CLI → core / 本地 IPC → Daemon / Worker。画布功能不再注册为模型专用工具。
-
-技术现状：npm workspaces + TypeScript；Electron + React + Vite + React Flow；better-sqlite3（JSON 兜底）；火山方舟 Provider；TOS；FFmpeg sidecar；Vercel AI SDK。保留 AI SDK，已移除未使用的 Mastra 直接依赖。
+技术栈和调用链见 [AGENTS.md](AGENTS.md)；唯一模块职责与实际源码归属见 [Reference](Reference/README.md)。架构问题和目标边界见 [问题记录](Reference/issues.md)。本计划管理阶段、待办和历史验证，不另定义一套模块规则。
 
 ## 3. 阶段状态
 
@@ -36,7 +23,7 @@
 | --- | --- | --- |
 | Phase 0：单画布闭环 | 实现中、待真实验收 | 基础生成、画布、时间线、导出均有代码；不能按“接口存在”宣布完成 |
 | Phase 1：多轨、惰性更新、预设、子画布 | 部分实现 | 多轨基础预览、过期检测与手动更新、预设命令、两层嵌套执行已有；高保真合成与完整预设复用待补 |
-| Phase 2：Agent 自动编排 | 基础实现 | 通用工具、Skills + CLI、历史持久化与中断恢复已实现；真实模型多镜头创作验收待完成 |
+| Phase 2：Agent 自动编排 | Runtime 基础能力已实现 | 流式循环、文件/补丁、Skills、Shell/PTY、MCP、压缩与多会话 UI 已有；执行续跑、多 Agent 及真实模型多镜头创作验收待完成 |
 | Phase 3：产品化 | 未开始 | 分发、自动更新、多 Provider；账号/计费仍后置 |
 
 | 里程碑 | 状态 | 说明 |
@@ -45,9 +32,9 @@
 | M1 状态协议 | 基础实现 | JSON、原子写、锁、SQLite；版本迁移、跨文件事务与恢复仍需加强 |
 | M2 Provider | 部分联调 | 历史记录：2026-08-30 文生图真实成功；本轮未调用付费生成 API |
 | M3 画布引擎 | 基础实现 | DAG、拓扑执行、缓存、父子任务；本轮修正子任务调度与缓存查询、限制两层嵌套 |
-| M4 CLI/MCP | 基础实现 | 命令和 manifest 已有；与 UI 的功能对齐仍需持续检查 |
+| M4 CLI/MCP | 基础实现 | CLI/manifest、对外会话 MCP 与 Runtime 外部 MCP 客户端已有；OAuth、交互扩展和外部客户端实机验收待补 |
 | M5 主进程任务 | 部分完善 | 幂等提交、独立远端生成恢复、视频任务取消与 FFmpeg 中止已接线；画布中途恢复待补 |
-| M6 UI | 基础交互与预览已实现 | 素材选择、播放器、时间线、多轨 HTML 媒体预览；尚未做 UI 端到端和高保真一致性验收 |
+| M6 UI | 基础交互与预览已实现 | 素材、播放器、时间线、多轨预览、多会话及 Runtime 设置；尚未做 UI 端到端和高保真一致性验收 |
 | M7 导出 | 初版实现、待 FFmpeg 实测 | 本轮修复导出配置、合成底图、原声、变换、画布图像与裁剪；真实编码结果尚未验证 |
 
 ## 4. 本轮已修复（2026-09-06）
@@ -101,9 +88,12 @@
 - [x] SkillRegistry 接入运行时；索引注入、按需读取正文，通过 Shell 调用 CLI，manifest 只负责命令发现。
 - [ ] 分镜解析与结构校验、多镜头生成、字幕/音乐/转场自动组装、失败重试与人工修改后继续。
 - [x] 按项目与 conversationId 持久化消息、工具调用与结果；异步运行、增量事件、停止、重启中断恢复。
-- [ ] 会话切换 UI、token 级流式输出和更精确的模型上下文预算。当前 UI 使用默认会话与步骤级事件。
+- [x] 多会话 UI：新建、切换、重命名、归档/恢复、软删除；消息、运行状态、停止操作和内存草稿按会话隔离。
+- [x] 流式文本增量、稳定文本事件 ID、增量事件游标；UI 轮询展示，返回运行中对话时还原未完成文本。
+- [x] 运行中摘要压缩和原历史归档；字符预算包含系统提示和工具定义，Token 估算用模型报告的用量校准。
+- [ ] 精确 Token 预算、历史分页与 Run 视图、回收站、草稿持久化、事件推送；Runtime 详细待办见第 12 节。
 - [ ] WebGL 与代理视频、缩略图/真实音频波形、媒体元数据索引、缓存清理。
-- [ ] 预设/附件/历史等占位入口按实际功能实现或隐藏；语音输入后置。
+- [ ] Add/Attach/More 占位入口实现或隐藏；用户附件链路待接入，语音输入后置。History 已接入对话管理。
 - [x] 继续使用 AI SDK；移除 Mastra 直接依赖，同步 Agent 设计文档。
 - [ ] Web Search：后续增加检索工具、来源引用和可配置搜索服务。
 - [ ] SandboxAgentHost：补充目录挂载与权限、网络控制、进程资源配额和凭证代理；保留当前 Host 接口。当前 local-trusted 无目录隔离和逐条命令审批。
@@ -114,11 +104,19 @@
 - [ ] 应用签名、更新机制、故障诊断包；账号/计费/多 Provider 后置。
 - [ ] CI 持续运行构建、单元、IPC/Worker、UI 与真实媒体集成测试。
 - [ ] 归档截图、历史 patch/fix 脚本及评审产物；demo-project/agent-smoke 包含现有用户文件，本轮不删除。
-- [ ] 同步 PRD/TECH_DESIGN 等旧文档的阶段状态、Agent 方案及实现边界。
+- [x] 2026-10-11：创建 AGENTS.md 和 Reference，合并重写旧设计并明确实际模块边界；现有职责重叠仅记录，未修改业务代码。
 
 ## 6. 验证记录
 
-2026-09-06 本轮：
+最近一次完整验证（2026-09-25）：
+
+- `npm test`：59 项通过；覆盖流式工具循环、文件/补丁、会话管理与中断恢复、真实管道、Windows PTY、Node/Electron 原生冒烟、stdio/HTTP MCP、CLI/业务闭环。
+- 中断恢复测试验证下一次模型请求包含恢复上下文、不重放未完成工具，后续正常请求不再带恢复段；CLI 集成测试实际调用 `load_skill`。
+- `npm run build:desktop`、`git diff --check`：通过；Vite 仍提示产物超过 500 kB。
+- 未验收：真实付费模型规划质量、完整 Electron UI 交互、Linux/macOS 原生执行、安装包和真实媒体闭环。
+- 2026-10-03 本次仅同步计划文档，未重新运行上述测试或宣称新增验收。
+
+历史验证（2026-09-06）：
 
 - `npm test`：26 个测试通过（原有 17 个 + 9 个行为回归）。
 - `npm run build:desktop`：已通过，原 CSS 语法警告已修复。
@@ -134,17 +132,17 @@
 
 ## 8. 设计文档索引
 
-- PRD.md：产品范围与验收场景
-- TECH_DESIGN.md / CORE_ENGINE_DESIGN.md：技术与核心引擎
-- CANVAS_PROTOCOL.md / PROJECT_STATE_PROTOCOL.md：图与状态协议
-- PROVIDER_ADAPTER_DESIGN.md：Provider/TOS
-- CLI_DESIGN.md / LOCAL_IPC_PROTOCOL.md：命令与进程通信
-- AGENT_ORCHESTRATION_DESIGN.md：Agent/Skill 设计
-- TIMELINE_RENDER_DESIGN.md：预览与导出
-- REPO_STRUCTURE.md / UI_LAYOUT_DESIGN.md：目录与 UI
-- REVIEW_ACTIONS.md：历史评审决策
+- [Reference 索引](Reference/README.md)：模块职责、源码映射与协作接口
+- [产品范围](Reference/product.md)：用户目标与成片验收
+- [架构问题](Reference/issues.md)：源码证据、建议归属与整改方向
+- [必要历史决策](Reference/decisions.md)：仍有价值的设计选择与未实施方向
+- [迁移对照](Reference/migration.md)：旧内容的新归属
+
+2026-10-11 本轮仅进行文档治理；下面原有实施记录和测试数字保持各自历史日期，不代表本轮业务验证结果。
 
 ## 9. 通用 Agent 实施记录（2026-09-08）
+
+以下为历史记录：其中 `edit_file` 已由 `apply_patch` 替代，上下文压缩已升级为运行中摘要；当前能力见第 11 节。
 
 - [x] 模型工具仅保留 list_files、read_file、write_file、edit_file、exec_command、read_process_output、terminate_process。
 - [x] Windows PowerShell / macOS Bash；项目默认 cwd、绝对路径、进程 ID、增量 UTF-8 日志、退出码、30 分钟超时、停止进程树。
@@ -166,6 +164,56 @@
 - [x] 保留 stdio MCP 的 ui_screenshot，新增 agent_send_prompt、agent_get_run、agent_history、agent_cancel。
 - [x] 通过现有认证 IPC 接入 AgentSessionService，复用桌面的会话、工具执行、持久化与取消行为。
 - [x] 默认 default 会话；支持显式 projectPath/conversationId，发送立即返回 runId，增量查询使用 after/cursor。
-- [x] 桌面空闲时自动发现外部运行并加载历史，同一项目自动显示聊天视图。
+- [x] 桌面空闲时轮询当前选中会话，发现该会话的外部运行后加载历史并显示聊天视图；其他会话可在列表查看状态并切换。
 - [x] README 提供外部 MCP 配置、轮询方法、并发及重试语义。
-- [ ] 外部 MCP 客户端与 Electron 实际交互验收；自定义会话切换 UI 后续实现。
+- [x] 自定义会话切换 UI 已实现（后续 Runtime 扩展）。
+- [ ] 外部 MCP 客户端与 Electron 实际交互验收。
+
+## 11. 当前 Agent Runtime 已实现（截至 2026-10-03）
+
+- [x] 通用 ReAct Loop：AI SDK 单步模型调用、流式输出、工具串行执行、取消、最大步数限制（默认 64 步）。
+- [x] ToolRegistry：JSON Schema 参数校验、重复名称检查、独立调用时注入 `additionalTools`。
+- [x] 文件工具：`list_files`、`search_files`、`search_text`、`read_file`、`write_file`、`apply_patch`；没有 `edit_file`。
+- [x] 文件保护：默认独占创建、覆盖哈希校验、完整分页读取后补丁、多文件预检查、补丁日志、失败回滚与启动恢复；多文件提交不是操作系统级原子事务。
+- [x] 终端工具：`exec_command`、`write_stdin`、`read_process_output`、`terminate_process`、`resize_terminal`；管道和真实 PTY、增量日志、超时、Session/Run 归属及结束清理。
+- [x] Skills：每次 Run 扫描内置/用户/项目目录，后者覆盖同名 Skill；`list_skills` / `load_skill` 提供索引和分页正文。Skill 不会动态注册工具。
+- [x] 外部 MCP：stdio、Streamable HTTP、工具发现与命名空间、参数校验、资源及模板读取、二进制附件落盘；启用 `supportsImages` 后可向模型传递受限数量/大小的图片。
+- [x] 上下文：运行中摘要压缩、完整历史归档、字符预算、模型用量事件和 Token 估算。
+- [x] 会话：按项目路径和 conversationId 隔离，JSON 快照与追加式 JSONL 事件、同会话单活跃 Run、不同会话可分别运行；启动/管理互斥、快照写入串行化。
+- [x] 中断识别：回放完整事件、截断日志残尾、未结束 Run 标记 interrupted、补充未完成工具结果；下一次请求启动新 Run 并附恢复提示，不自动续跑或重放副作用。
+- [x] UI：多会话管理、工具活动、流式文本、用量展示、停止、按会话内存草稿、记住所选会话；切换不终止后台 Run。
+- [x] 设置：Shell 路径、步数/上下文预算、MCP 配置与连接测试、Skill 列表；Runtime 配置经 safeStorage 加密，env/headers 读取脱敏。
+- [x] 分层 SP：Identity、Scope、Runtime context、Execution protocol、Application instructions、Skills、可选 Recovery context；仅保留 `applicationPrompt`，旧 `systemPrompt` 字段已删除。
+
+当前执行为可信本地模式，cwd 不是权限边界；会话与日志明文保存。停止 Agent 会清理所属本地进程，不自动取消已提交的业务或远端任务。
+
+## 12. Agent Runtime 后续计划
+
+以下是能力待办及建议顺序，尚未开始实现；不替代第 1 节产品闭环里程碑。
+
+### 第一阶段：数据模型与运行可靠性
+
+- [ ] 显式 Run/Message 模型：保留完整 Run 历史、统一消息 ID/时间戳/Run 归属，提供按轮查询、消息分页和运行用量汇总。当前 `session.run` 只直接保存最近一次 Run，消息仍是连续数组。
+- [ ] 用户交互：`request_user_input`、waiting_input/waiting_approval 状态、回答或审批后继续；运行中追加/排队消息。
+- [ ] 执行恢复：检查点、暂停/继续、可恢复工具状态与副作用幂等策略；区分模型请求重试和工具操作重试。
+- [ ] 超时与预算：模型请求超时、Run 总时限、累计 Token/费用预算、全局并发上限和任务队列；当前模型请求 `maxRetries: 0`。
+- [ ] 错误分类及有界退避：针对可安全重试的网络/429/5xx 请求，未知结果的副作用操作仍需先查状态。
+
+### 第二阶段：权限、存储与诊断
+
+- [ ] SandboxAgentHost、目录/网络访问策略、工具授权及命令审批、进程资源配额；审批 UI 与等待状态协同实现。
+- [ ] 存储维护：历史索引/搜索、日志及补丁保留与清理策略、跨进程写入协调、持久化格式迁移。
+- [ ] 可观测性：按 Run 汇总耗时、工具结果、Token 和费用，提供故障诊断与敏感信息处理。
+- [ ] 会话体验：历史 Run 视图、重新生成、消息编辑与分支、回收站、草稿持久化；事件推送替代轮询。
+
+### 第三阶段：扩展能力
+
+- [ ] 工具中间件及生命周期 Hooks、按会话启用工具、按需发现和只读工具并行执行。
+- [ ] Skills 安装/版本及依赖管理、运行中热更新、加载完整性检查；当前完整阅读主要由模型遵循工具说明。
+- [ ] MCP OAuth、prompts、sampling、elicitation；按实际服务需求决定是否支持旧版 SSE。
+- [ ] 多 Agent：子 Agent、任务委派、独立上下文、并发控制与结果汇总。
+- [ ] 上下文与记忆：精确 Token 预算、消息重要性管理、跨会话记忆和检索。
+- [ ] 用户附件上传、本地图片读取工具和 Web Search；已有 MCP 图片输入不等于用户附件链路已完成。
+- [ ] 模型适配与评测：扩展当前 OpenAI-compatible Chat 调用路径，验证模型能力差异，建立真实任务成功率与回归评测。
+
+各阶段须分别记录代码完成、自动化验证和实机验收；现有测试不能替代真实模型质量、跨平台原生执行及 UI 交互验收。

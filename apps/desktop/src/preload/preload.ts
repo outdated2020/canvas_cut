@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
       'project.open',
       'project.status',
       'canvas.create',
+      'canvas.rename',
       'canvas.remove',
       'canvas.get',
       'canvas.list',

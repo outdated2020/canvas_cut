@@ -10,7 +10,7 @@ import {
   ProjectStore
 } from '@canvas-cut/core';
 import { JobStore, JsonFileJobStore, SqliteJobStore } from './job-store';
-import { JobWorker } from './job-worker';
+import { JobWorker, type WorkerOptions } from './job-worker';
 import { notifyCanvasChanged, type CanvasChanged } from '@canvas-cut/core';
 
 interface ProjectContext {
@@ -27,7 +27,7 @@ export interface SubmitResult {
 }
 
 export class DaemonService {
-  constructor(private readonly canvasChanged?: CanvasChanged) {}
+  constructor(private readonly canvasChanged?: CanvasChanged, private readonly workerOptions: WorkerOptions = {}) {}
   private readonly contexts = new Map<string, ProjectContext>();
   private readonly openingContexts = new Map<string, Promise<ProjectContext>>();
   private readonly submissions = new Map<string, Promise<unknown>>();
@@ -49,7 +49,7 @@ export class DaemonService {
     const store = new ProjectStore(projectPath);
     await store.requireOpen();
     const jobStore = this.createJobStore(store);
-    const worker = new JobWorker(store, jobStore, { onCanvasChanged: this.canvasChanged });
+    const worker = new JobWorker(store, jobStore, { ...this.workerOptions, onCanvasChanged: this.canvasChanged });
     worker.start();
     const context = {
       store,
@@ -126,7 +126,9 @@ export class DaemonService {
       const nodeId = typeof payload.nodeId === 'string' ? payload.nodeId : undefined;
       const graph = await context.store.readCanvas(canvasId);
       const project = await context.store.readProject();
-      const plan = await buildCanvasRenderPlan(graph, project.settings, { force, nodeId });
+      const config = await context.store.readConfig();
+      const plan = await buildCanvasRenderPlan(graph, project.settings, { force, nodeId,
+        modelDefaults: { imageModel: config.provider.volcengine.imageModel, videoModel: config.provider.volcengine.videoModel } });
       const dedupeKey = `${canvasId}:${graph.graphHash}`;
       const existingId = context.activeCanvasRenders.get(dedupeKey);
       if (!force && existingId) {

@@ -77,8 +77,8 @@ export function createDefaultConfigFile(): ProjectConfigFile {
       default: 'volcengine',
       volcengine: {
         baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-        imageModel: 'doubao-seedream-5-0-pro-260628',
-        videoModel: 'doubao-seedance-2-5-260628',
+        imageModel: 'doubao-seedream-5-0-flash-260915',
+        videoModel: 'doubao-seedance-2-0-mini-260615',
         timeoutMs: 300_000
       }
     },

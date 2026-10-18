@@ -9,6 +9,7 @@ import {
   removeNode,
   setNodeParams,
   CanvasCutError,
+  CanvasOperations,
   ERROR_CODES
 } from '@canvas-cut/core';
 import { createStore, withLockedStore } from '../context';
@@ -23,7 +24,7 @@ export async function canvasCreate(options: CliOptions): Promise<unknown> {
     const name = stringFlag(options.flags, 'name');
     const canvas = createCanvas(id, name);
     await store.writeCanvas(canvas);
-    return { canvasId: id, version: canvas.version, name };
+    return { canvasId: id, version: canvas.version, name: canvas.name };
   });
 }
 
@@ -35,6 +36,23 @@ export async function canvasGet(options: CliOptions): Promise<unknown> {
   const store = createStore(options);
   await store.requireOpen();
   return store.readCanvas(canvasId);
+}
+
+export async function canvasRename(options: CliOptions): Promise<unknown> {
+  const canvasId = options.positionals[0], name = stringFlag(options.flags, 'name');
+  if (!canvasId || name === undefined) throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, 'canvas rename requires a canvas id and --name');
+  const store = createStore(options);
+  const input = { canvasId, name };
+  const client = new LocalIpcClient(store.paths.root);
+  let online = false;
+  try {
+    await client.request('ping');
+    online = true;
+  } catch (error) {
+    if (!(error instanceof CanvasCutError) || error.code !== ERROR_CODES.DAEMON_UNAVAILABLE) throw error;
+  }
+  // Probe read-only first: never replay an uncertain mutation after an IPC failure.
+  return online ? client.request('canvas.rename', input) : new CanvasOperations().call('canvas.rename', store.paths.root, input);
 }
 
 export async function canvasRemove(options: CliOptions): Promise<unknown> {
@@ -169,7 +187,9 @@ export async function canvasRender(options: CliOptions): Promise<unknown> {
 
   if (options.dryRun) {
     const project = await store.readProject();
-    return buildCanvasRenderPlan(graph, project.settings, { force, nodeId });
+    const config = await store.readConfig();
+    return buildCanvasRenderPlan(graph, project.settings, { force, nodeId,
+      modelDefaults: { imageModel: config.provider.volcengine.imageModel, videoModel: config.provider.volcengine.videoModel } });
   }
 
   const client = new LocalIpcClient(store.paths.root, stringFlag(options.flags, 'idempotency-key'));

@@ -1,8 +1,0 @@
-{
-  "prompt": "一只布偶猫和一只哈士奇正在室内玩耍打架，毛发蓬松，动作活泼，写实风格，高清画质，明亮室内环境",
-  "negativePrompt": "模糊，低质量，变形，丑陋，多余肢体，文字水印",
-  "width": 1280,
-  "height": 720,
-  "numInferenceSteps": 30,
-  "guidanceScale": 7.5
-}

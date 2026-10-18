@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
+import { renderWhiteModelVideo } from './white-model-renderer';
 import { join } from 'node:path';
 import { promises as fs } from 'node:fs';
 import {
@@ -134,7 +135,7 @@ function createWindow(): BrowserWindow {
 function registerIpcHandlers(): void {
   ipcMain.handle('canvas-cut:invoke', async (_event, channel: string, payload: Record<string, unknown>) => {
     if (isCanvasOperation(channel)) {
-      const { path, name: _legacyName, ...input } = payload;
+      const { path, ...input } = payload;
       const data = await canvasOperations.call(channel, path as string, input);
       // Retain the renderer's existing return shapes while sharing operations.
       if (channel === 'canvas.create') return data.canvas;
@@ -600,7 +601,7 @@ if (!gotLock) {
       process.env.FFMPEG_PATH = localSettings.ffmpegPath;
     }
     logger.info('Starting DaemonService...');
-    daemon = new DaemonService(canvasChanged);
+    daemon = new DaemonService(canvasChanged, { renderWhiteModel: renderWhiteModelVideo });
     for (const diagnostic of await recoverPatches(join(app.getPath('userData'), 'agent', 'patches'))) logger.warn(diagnostic);
     agentService = await createAgentService({ userDataDir: app.getPath('userData'), appRoot: app.getAppPath(), executable: process.execPath, settings: readLocalRuntimeSettings });
     logger.info('Starting IPC server...');

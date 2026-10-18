@@ -14,12 +14,30 @@ export function createCanvas(id: string, name?: string): CanvasGraph {
   const canvas: CanvasGraph = {
     schemaVersion: 1,
     id,
+    ...(name === undefined ? {} : { name: normalizeCanvasName(name) }),
     version: 1,
     graphHash: '',
     nodes: [],
     edges: []
   };
   canvas.graphHash = computeGraphHash(canvas);
+  return canvas;
+}
+
+export function normalizeCanvasName(name: unknown): string {
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(name)) {
+    throw new CanvasCutError(ERROR_CODES.INVALID_PARAMS, '画布名称须为 1–100 个字符，不能包含换行或控制字符');
+  }
+  return name.trim();
+}
+
+/** Rename metadata without invalidating generated content or timeline references. */
+export function renameCanvas(canvas: CanvasGraph, name: unknown): CanvasGraph {
+  const normalized = normalizeCanvasName(name);
+  if (canvas.name !== normalized) {
+    canvas.name = normalized;
+    canvas.version += 1;
+  }
   return canvas;
 }
 

@@ -8,6 +8,9 @@ import { RuntimeSettings } from './RuntimeSettings';
 import { ContextUsageRing } from './ContextUsageRing';
 import { Player } from './Player';
 import { CanvasGraphView } from './CanvasGraphView';
+import { CanvasName } from './CanvasName';
+import { nodeLabels } from './NodeParamsInline';
+import { defaultWhiteModelParams } from '@canvas-cut/core/dist/canvas/white-model';
 import { TimelineView } from './TimelineView';
 import { Icon } from './icons';
 import type { TimelineFile, Track, Clip } from '@canvas-cut/core';
@@ -376,6 +379,14 @@ export function App() {
     setCenterTab('canvas');
   }
 
+  async function renameCanvas(canvasId: string, name: string) {
+    const path = viewProjectPath;
+    const result = await invoke('canvas.rename', { path, canvasId, name }) as AnyRecord;
+    if (projectKey(projectInput.current) !== projectKey(path)) return;
+    setCanvases(current => current.map(item => item.id === canvasId ? { ...item, name: result.name } : item));
+    setCanvas(current => current?.id === canvasId ? { ...current, name: result.name, version: Math.max(current.version, result.version) } : current);
+  }
+
   async function deleteCanvas(canvasId: string) {
     if (deletingCanvas) return;
     setDeletingCanvas(canvasId);
@@ -437,31 +448,33 @@ export function App() {
     setCanvas(updated);
   }
 
-  async function addNode() {
-    if (!canvas) return;
-    try {
-      const defaultParams: Record<string, unknown> = {};
-      if (newNodeType === 'text-input') defaultParams.text = 'Your prompt here';
-      else if (newNodeType === 'text-to-image' || newNodeType === 'text-to-video') {
-        defaultParams.prompt = 'A beautiful landscape';
-        if (newNodeType === 'text-to-video') defaultParams.durationMs = 5000;
-      } else if (newNodeType === 'image-to-image' || newNodeType === 'image-to-video') {
-        defaultParams.prompt = 'Enhance this image';
-        if (newNodeType === 'image-to-video') defaultParams.durationMs = 5000;
-      } else if (newNodeType === 'video-to-video') {
-        defaultParams.prompt = 'Edit this video';
-        defaultParams.mode = 'edit';
-      }
-      await invoke('canvas.node.add', {
-        path: projectPath,
-        canvasId: canvas.id,
-        type: newNodeType,
-        params: defaultParams
-      });
-      await refreshCanvas(canvas.id);
-    } catch (error) {
-      addLog(String(error));
+  async function addNode(type: string): Promise<string> {
+    if (!canvas) throw new Error('请先打开画布');
+    const target = viewIdentity.current;
+    const defaultParams: Record<string, unknown> = {};
+    if (type === 'text-input') defaultParams.text = 'Your prompt here';
+    else if (type === 'text-to-image' || type === 'text-to-video') {
+      defaultParams.prompt = 'A beautiful landscape';
+      if (type === 'text-to-video') defaultParams.durationMs = 5000;
+    } else if (type === 'image-to-image' || type === 'image-to-video') {
+      defaultParams.prompt = 'Enhance this image';
+      if (type === 'image-to-video') defaultParams.durationMs = 5000;
+    } else if (type === 'white-model-video') {
+      Object.assign(defaultParams, defaultWhiteModelParams());
+    } else if (type === 'video-to-video') {
+      defaultParams.prompt = 'Edit this video';
+      defaultParams.mode = 'edit';
     }
+    const added = await invoke('canvas.node.add', {
+      path: projectPath,
+      canvasId: canvas.id,
+      type,
+      params: defaultParams
+    }) as AnyRecord;
+    if (viewIdentity.current.epoch === target.epoch) {
+      await refreshCanvas(canvas.id).catch(error => addLog(`Canvas refresh failed: ${String(error)}`));
+    }
+    return added.id;
   }
 
   async function removeNode(nodeId: string) {
@@ -1084,17 +1097,13 @@ export function App() {
                 {canvas && (
                   <>
                     <button className="ibtn" title="Back" onClick={() => { setCenterTab('canvas'); setCanvas(null); setCanvasExpanded(false); }}><Icon name="chevronLeft" size={15} /></button>
+                    <CanvasName key={viewKey} name={canvas.name} fallback={`Canvas ${Math.max(1, canvases.findIndex(item => item.id === canvas.id) + 1)}`}
+                      onRename={name => renameCanvas(canvas.id, name)} />
                     <button className="ibtn" title={canvasExpanded ? 'Shrink' : 'Expand'} onClick={() => setCanvasExpanded(!canvasExpanded)}><Icon name={canvasExpanded ? 'fit' : 'expand'} size={15} /></button>
                     <select value={newNodeType} onChange={(event) => setNewNodeType(event.target.value)}>
-                      <option value="text-input">Text Input</option>
-                      <option value="text-to-image">Text to Image</option>
-                      <option value="text-to-video">Text to Video</option>
-                      <option value="image-to-image">Image to Image</option>
-                      <option value="image-to-video">Image to Video</option>
-                      <option value="video-to-video">Video to Video</option>
-                      <option value="output">Output</option>
+                      {Object.entries(nodeLabels).map(([type, label]) => <option key={type} value={type}>{label}</option>)}
                     </select>
-                    <button className="tb-text" onClick={addNode} disabled={!canvas}>Add node</button>
+                    <button className="tb-text" onClick={() => void addNode(newNodeType).catch(error => addLog(String(error)))} disabled={!canvas}>Add node</button>
                     <button className="tb-text" onClick={() => renderCanvas(false)} disabled={!canvas}>Render</button>
                     <button className="tb-text accent" onClick={() => renderCanvas(true)} disabled={!canvas}>Force render</button>
                     <button className="tb-text canvas-delete-action" onClick={() => void deleteCanvas(canvas.id)} disabled={!!deletingCanvas}>删除画布</button>
@@ -1105,25 +1114,29 @@ export function App() {
                 {canvasDeleteError && <div className="canvas-delete-error" role="alert">{canvasDeleteError}<button onClick={() => setCanvasDeleteError('')} aria-label="关闭提示">×</button></div>}
                 {canvas ? (
                   <CanvasGraphView
+                    key={viewKey}
                     canvas={canvas}
+                    projectPath={viewProjectPath}
                     assets={assets}
                     canvases={canvases}
                     onConnect={connectCanvasNodes}
                     onRemoveNode={removeNode}
                     onRemoveEdge={removeEdge}
                     onUpdateNodeParams={updateNodeParams}
+                    onAddNode={addNode}
                     config={config}
                   />
                 ) : canvases.length > 0 ? (
                   <div className="canvas-grid">
                     {canvases.map((item, index) => (
                       <div key={item.id} className="canvas-card-wrap">
-                      <button className="canvas-card" onClick={() => openCanvas(item.id)}>
+                      <button className="canvas-card" aria-label={`打开画布 ${item.name || `Canvas ${index + 1}`}`} onClick={() => openCanvas(item.id)}>
                         <span className="canvas-card-icon"><Icon name="share" size={16} /></span>
-                        <span className="canvas-card-title">Canvas {index + 1}</span>
+                        <span className="canvas-card-title" aria-hidden="true">{item.name || `Canvas ${index + 1}`}</span>
                         <span className="canvas-card-meta">{item.nodeCount} nodes</span>
                       </button>
-                      <button className="canvas-card-delete" aria-label={`删除 Canvas ${index + 1}`} title="删除画布" disabled={!!deletingCanvas} onClick={() => void deleteCanvas(item.id)}>
+                      <CanvasName key={`${projectKey(viewProjectPath)}:${item.id}`} name={item.name} fallback={`Canvas ${index + 1}`} onRename={name => renameCanvas(item.id, name)} />
+                      <button className="canvas-card-delete" aria-label={`删除 ${item.name || `Canvas ${index + 1}`}`} title="删除画布" disabled={!!deletingCanvas} onClick={() => void deleteCanvas(item.id)}>
                         {deletingCanvas === item.id ? '删除中…' : '删除'}
                       </button>
                       </div>
