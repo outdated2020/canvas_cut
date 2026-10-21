@@ -50,6 +50,8 @@ scripts/test-generate.mjs、test-video.mjs 是可调用真实生成服务的手�
 
 ## 验证入口
 
+模型 API 配置迁移：桌面构建后运行 `node --test tests/model-api-transfer.test.mjs` 和 `electron tests/fixtures/model-api-transfer-smoke.cjs out/model-api-transfer-ui`；协议与字段规则见[桌面设置](desktop-shell.md)，UI 验证边界见[桌面 UI](desktop-ui.md)。测试只使用隔离临时目录和虚拟凭证，不读取用户配置或访问模型服务。
+
 业务验证按变更选取：画布/存储/Provider 用 core/canvas/white-model，队列/导出用 audit，CLI/MCP 用 cli/mcp/canvas-codemode，Agent 用 agent/runtime/conversations/runtime-mcp/runtime-native，UI 状态用 canvas-sync/context-usage。名称指 tests 中对应文件；独立 Code Mode 测试在 packages/codemode/test。
 
 DeepSeek 思考回传回归入口为 [deepseek.test.mjs](../../tests/deepseek.test.mjs)，编译 agent 后运行 `node --test tests/deepseek.test.mjs tests/runtime.test.mjs tests/agent.test.mjs tests/conversations.test.mjs tests/context-usage.test.mjs`；严格模拟 API，不需要模型凭证，不访问真实生成服务。具体协议与持久化验证见[Runtime](agent-runtime.md)。

@@ -59,6 +59,8 @@ contextBridge.exposeInMainWorld('api', {
       'agent.runtime.test',
       'config.get',
       'settings.get-runtime',
+      'settings.export-model-api',
+      'settings.import-model-api',
       'settings.set-runtime'
     ]);
     if (!allowed.has(channel)) {

@@ -102,6 +102,8 @@ my-video/
 
 桌面运行时设置、IPC 实例信息和 Agent 会话保存在 Electron userData。敏感设置通过 Electron safeStorage 加密，不应把密钥或运行时凭证提交到项目仓库。生成 Worker 从桌面进程读取 ARK 和 TOS 凭证，因此只给 MCP 子进程配置密钥不能代替桌面配置。
 
+跨电脑迁移模型 API 配置：打开设置，点击「导出配置」，把 JSON 复制到新电脑，在设置中点击「导入配置」，检查表单后点击「保存」。导出当前表单中的 ARK/Agent 地址、模型及 TOS 配置，默认不含凭证；需要连同密钥迁移时勾选「包含 API 密钥（明文）」，妥善保管该文件，新电脑保存后会重新进行系统加密。未包含的字段保留原值。FFmpeg 路径、Runtime/Langfuse/MCP、项目内容和节点模型覆盖不包含在文件中；格式与边界见[桌面设置](Reference/modules/desktop-shell.md)。
+
 FFmpeg 与 ffprobe 可以加入 PATH，也可在桌面设置填写 FFmpeg 可执行文件的完整路径，并将 ffprobe 放在同目录；支持 `FFMPEG_PATH` / `FFPROBE_PATH` 环境变量。画布修改后需要重新生成；时间线引用可通过桌面更新操作或 CLI `timeline refresh-canvases` 更新，更新会保留已有裁剪长度。
 
 ## 配置 MCP 服务

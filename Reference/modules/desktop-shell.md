@@ -6,7 +6,7 @@ Electron 应用的装配入口，负责窗口和应用级配置生命周期。�
 
 ## 对应源码
 
-[main.ts](../../apps/desktop/src/main/main.ts)。构建和启动配置归[工程支持](engineering.md)，IPC 传输归[桥接](desktop-bridge.md)。
+[main.ts](../../apps/desktop/src/main/main.ts)、[model-api-transfer.ts](../../apps/desktop/src/main/model-api-transfer.ts)（可迁移配置格式与文件导入导出）。构建和启动配置归[工程支持](engineering.md)，IPC 传输归[桥接](desktop-bridge.md)。
 
 ## 负责事项
 
@@ -27,9 +27,13 @@ Electron 应用的装配入口，负责窗口和应用级配置生命周期。�
 
 ## 数据和副作用
 
+`settings.export-model-api` 接收当前表单 settings 和显式布尔 includeSecrets，通过保存对话框写 JSON；`settings.import-model-api` 通过打开对话框返回 `{cancelled,settings?}`，只填草稿，不持久化或修改环境变量。两者取消均返回 cancelled:true。格式为 `{format:"canvas-cut-model-api",version:1,settings:{...}}`；白名单为 ARK 地址/图片模型/视频模型/API Key，Agent 地址/模型/API Key，以及 TOS ID/Secret/bucket/region/endpoint。默认导出剔除全部四个凭证字段；显式包含时导出明文，导入保存复用 settings.set-runtime 和本机 safeStorage。FFmpeg、Agent Runtime/Langfuse/MCP、项目内容不在格式内。导入拒绝错误格式/版本、未知字段、非字符串、超过 8192 字符的值、本机 encrypted:v1 数据和超过 256 KB 文件，错误不包含字段值。不重定义 Provider 模型规则，端点等保存校验仍归原有保存入口。
+
 应用 userData/runtime-settings.json 保存 ARK、TOS、Agent 和 FFmpeg 等运行设置。指定敏感字段使用 safeStorage 和 encrypted:v1 前缀；旧明文仅在加密可用时迁移，写入非空敏感字段时要求加密可用。项目 config.json 的非凭证字段归项目存储。Agent Runtime 配置的脱敏/合并契约归[Runtime](agent-runtime.md)，宿主提供实际存储。创建窗口、弹出系统对话框、写设置和退出应用都属于本模块副作用。
 
 ## 验证入口
+
+[model-api-transfer.test.mjs](../../tests/model-api-transfer.test.mjs)验证凭证可选、字段隔离、跨设备可读往返、缺省字段保留、非法输入、取消和文件 I/O；桌面构建后运行 `node --test tests/model-api-transfer.test.mjs`。隔离 UI 验证见[桌面 UI](desktop-ui.md)。
 
 [runtime.test.mjs](../../tests/runtime.test.mjs)包含配置校验/脱敏测试；桌面构建和真实启动用于检查装配。safeStorage、旧凭证迁移、双平台窗口与退出流程仍需实机验收；本轮未执行这些验证。
 

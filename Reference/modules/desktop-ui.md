@@ -30,6 +30,8 @@
 
 ## 接口与依赖
 
+[ModelApiTransfer](../../apps/desktop/src/renderer/ModelApiTransfer.tsx) 在设置顶部提供导入/导出及默认关闭的“包含 API 密钥（明文）”。导出当前表单；导入合并白名单字段，缺省字段保持现值，提示点击保存后生效；取消不改表单，失败显示错误并可重试。JSON 格式、校验和文件对话框归[桌面设置](desktop-shell.md)，renderer 不直接访问文件。迁移范围包含 TOS，不包含 FFmpeg、Runtime、Langfuse/MCP、节点模型覆盖或项目内容。
+
 依赖 React、React Flow、three.js、React Markdown/GFM，调用[preload](desktop-bridge.md)的 invoke/onCanvasChanged。跨进程输入做 UI 适配，不复制服务契约。当前 white-model 参数共享入口来自 core 深层 dist 导入，构建别名见[工程](engineering.md)。
 
 预览有素材模式和时间线模式：素材读取 AssetRef 路径，时间线根据播放头组合活动图像/视频/音频/字幕，并应用基础变换、裁剪、变速与音量。后端是 HTML video/audio/img + DOM/CSS，不是时间线 WebGL 合成或低清代理。three.js WebGL 仅负责白模场景。
@@ -39,6 +41,8 @@
 保存组件状态、节点位置/选择和草稿，调用服务产生业务副作用；播放/暂停/seek 更新媒体元素。节点绝对位置、分组 ID/名称/成员以版本 1 的展示数据写入浏览器 localStorage，键按项目绝对路径和画布 ID 隔离；不保存素材、凭证或执行状态。恢复会过滤失效成员，损坏存储回退默认布局；存储不可用时仅维护当前会话。刷新保留测量尺寸、位置和选择，离开视图/卸载页面时保存最后布局。布局未写入项目 JSON，换设备或清除应用本地存储不会携带。会话切换不会停止后台 Run，停止按钮针对当前会话。时间线 stale/fresh 等状态来自服务结果；不要在 UI 定义另一套数据版本协议。
 
 ## 验证入口
+
+[model-api-transfer-smoke.cjs](../../tests/fixtures/model-api-transfer-smoke.cjs) 使用真实 preload 白名单和迁移模块，隔离主进程文件选择与设置保存，验证默认不导出凭证、显式包含凭证、取消、坏文件恢复、草稿合并保留密钥/FFmpeg 以及点击保存。构建后运行 `electron tests/fixtures/model-api-transfer-smoke.cjs out/model-api-transfer-ui`；仅使用虚拟凭证和 out 目录，不访问用户配置或模型服务，未进行双电脑实机迁移。2026-10-22：构建、4 项单元测试及此 UI 脚本通过；系统对话框由测试选择器替代。
 
 [canvas-sync.test.mjs](../../tests/canvas-sync.test.mjs)、[conversations.test.mjs](../../tests/conversations.test.mjs)、[context-usage.test.mjs](../../tests/context-usage.test.mjs)、[audit.test.mjs](../../tests/audit.test.mjs)覆盖刷新与部分播放/会话行为。白模 UI 脚本为 [white-model-ui-smoke.cjs](../../tests/fixtures/white-model-ui-smoke.cjs)。右键菜单隔离 Electron 验证脚本为 [canvas-context-menu-smoke.cjs](../../tests/fixtures/canvas-context-menu-smoke.cjs)，使用 [内存 preload](../../tests/fixtures/canvas-context-menu-preload.cjs)，检查全部 11 类节点、默认参数、缩放/平移落点与通知竞态、菜单关闭、边缘避让和失败重试；构建后用 Electron 运行并传入隔离输出目录。该脚本不调用 Provider，也不写用户项目；完整交互和预览/导出一致性仍须独立验收。
 

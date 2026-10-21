@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron';
 import { renderWhiteModelVideo } from './white-model-renderer';
+import { exportModelApiSettings, importModelApiSettings, type ModelApiTransferDialogs } from './model-api-transfer';
 import { join } from 'node:path';
 import { promises as fs } from 'node:fs';
 import {
@@ -79,6 +80,21 @@ async function readLocalRuntimeSettings(): Promise<Record<string, unknown>> {
 }
 
 const SECRET_SETTINGS = ['arkApiKey', 'agentApiKey', 'tosAccessKeyId', 'tosAccessKeySecret', 'agentRuntime'];
+
+const modelApiDialogs: ModelApiTransferDialogs = {
+  async save() {
+    const options = { title: '导出模型 API 配置', defaultPath: 'canvas-cut-model-api.json',
+      filters: [{ name: 'JSON 配置', extensions: ['json'] }] };
+    const result = await (mainWindow ? dialog.showSaveDialog(mainWindow, options) : dialog.showSaveDialog(options));
+    return result.canceled ? undefined : result.filePath;
+  },
+  async open() {
+    const options: Electron.OpenDialogOptions = { title: '导入模型 API 配置', properties: ['openFile'],
+      filters: [{ name: 'JSON 配置', extensions: ['json'] }] };
+    const result = await (mainWindow ? dialog.showOpenDialog(mainWindow, options) : dialog.showOpenDialog(options));
+    return result.canceled ? undefined : result.filePaths[0];
+  }
+};
 
 async function writeLocalRuntimeSettings(data: Record<string, unknown>): Promise<void> {
   const stored = { ...data };
@@ -462,6 +478,10 @@ function registerIpcHandlers(): void {
         return agentService.history(String(payload.path), String(payload.conversationId ?? 'default'));
       case 'agent.chat':
         return agentService.chat(String(payload.path), String(payload.message ?? ''), String(payload.conversationId ?? 'default'));
+      case 'settings.export-model-api':
+        return exportModelApiSettings(modelApiDialogs, payload.settings, payload.includeSecrets === true);
+      case 'settings.import-model-api':
+        return importModelApiSettings(modelApiDialogs);
       case 'settings.get-runtime': {
         const store = new ProjectStore(String(payload.path));
         await store.requireOpen();

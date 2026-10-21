@@ -5,6 +5,7 @@ import { Conversations, useConversations } from './Conversations';
 import { ChatMarkdown } from './ChatMarkdown';
 import { AgentActivity } from './AgentActivity';
 import { RuntimeSettings } from './RuntimeSettings';
+import { ModelApiTransfer } from './ModelApiTransfer';
 import { ContextUsageRing } from './ContextUsageRing';
 import { Player } from './Player';
 import { CanvasGraphView } from './CanvasGraphView';
@@ -1261,6 +1262,8 @@ export function App() {
         <div className="settings-overlay">
           <div className="settings-modal">
             <h2>设置</h2>
+            <ModelApiTransfer settings={runtimeSettings} disabled={settingsSaving}
+              onImport={values => setRuntimeSettings(current => ({ ...current, ...values }))} />
             <h3 className="settings-section-title">图像与视频生成 · 火山方舟</h3>
             <p className="settings-help">模型和服务地址保存到当前项目。视频模型需支持图生视频，并在你的账号下可用。</p>
             <label>ARK Base URL <input value={runtimeSettings.arkBaseUrl} placeholder="https://ark.cn-beijing.volces.com/api/v3" onChange={(event) => setRuntimeSettings({ ...runtimeSettings, arkBaseUrl: event.target.value })} /></label>

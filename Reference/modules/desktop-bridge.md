@@ -36,6 +36,8 @@ preload 白名单包含 canvas.rename；主进程将 name 原样传给 CanvasOpe
 
 ## 数据和副作用
 
+renderer 白名单包含 `settings.export-model-api`、`settings.import-model-api`，均仅在桌面主进程调用系统文件对话框，不向 CLI/MCP 暴露文件读写入口。参数、文件格式和保存语义归[桌面设置](desktop-shell.md)；取消返回 cancelled:true，导入配置只返回白名单字段给表单。
+
 建立本地端点、写实例文件、发送消息、写截图 userData/ui-screenshots/main-window-latest.png；不新增网络监听端口。stop 关闭服务并移除实例文件/socket。截图可被 MCP 读取并作为图片返回，图片是 UI 捕获而非生成素材。连接/调用取消不自动回滚已发送的业务请求，任务取消应调用[任务接口](desktop-jobs.md)。
 
 ## 验证入口
